@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TuneJam</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #1a202c; /* Dark background similar to the image */
+            color: #e2e8f0; /* Light text color */
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1.5rem;
+            flex-grow: 1;
+        }
+        .card {
+            background-color: #2d3748; /* Darker card background */
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .btn-primary {
+            background-color: #4299e1; /* Blue */
+            color: white;
+            padding: 0.75rem 1.25rem;
+            border-radius: 0.375rem;
+            transition: background-color 0.2s;
+        }
+        .btn-primary:hover {
+            background-color: #3182ce;
+        }
+        .btn-danger {
+            background-color: #e53e3e; /* Red */
+            color: white;
+            padding: 0.75rem 1.25rem;
+            border-radius: 0.375rem;
+            transition: background-color 0.2s;
+        }
+        .btn-danger:hover {
+            background-color: #c53030;
+        }
+        input[type="text"], input[type="search"] {
+            background-color: #4a5568; /* Darker input background */
+            border: 1px solid #2d3748;
+            color: #e2e8f0;
+            border-radius: 0.375rem;
+            padding: 0.75rem 1rem;
+            width: 100%;
+        }
+        .chat-messages {
+            height: 300px;
+            overflow-y: auto;
+            background-color: #1a202c;
+            border-radius: 0.375rem;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .chat-message {
+            background-color: #4a5568;
+            padding: 0.5rem 0.75rem;
+            border-radius: 0.375rem;
+        }
+        .chat-message span {
+            font-weight: 600;
+            color: #a0aec0; /* Lighter grey for username */
+        }
+        .chat-message.system {
+            text-align: center;
+            font-style: italic;
+            color: #a0aec0;
+            background-color: #2d3748;
+        }
+        .search-result-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.75rem;
+            border-bottom: 1px solid #4a5568;
+        }
+        .search-result-item:last-child {
+            border-bottom: none;
+        }
+        .search-result-thumbnail {
+            width: 80px;
+            height: 45px; /* Maintain aspect ratio for 16:9 */
+            object-fit: cover;
+            border-radius: 0.25rem;
+        }
+        .play-icon {
+            font-size: 1.5rem;
+        }
+        .player-controls {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 1.5rem;
+            margin-top: 1rem;
+        }
+        .player-controls button {
+            background: none;
+            border: none;
+            color: #e2e8f0;
+            cursor: pointer;
+            padding: 0.5rem;
+            border-radius: 50%;
+            transition: background-color 0.2s;
+        }
+        .player-controls button:hover {
+            background-color: #4a5568;
+        }
+        .progress-bar-container {
+            width: 100%;
+            height: 8px;
+            background-color: #4a5568;
+            border-radius: 4px;
+            margin-top: 0.5rem;
+            overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background-color: #4299e1;
+            width: 0%;
+            border-radius: 4px;
+        }
+        .jam-queue-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.75rem;
+            border-bottom: 1px solid #4a5568;
+            position: relative; /* For positioning remove button */
+        }
+        .jam-queue-item:last-child {
+            border-bottom: none;
+        }
+        .jam-queue-thumbnail {
+            width: 60px;
+            height: 33px; /* Aspect ratio for 16:9 */
+            object-fit: cover;
+            border-radius: 0.25rem;
+        }
+        .jam-queue-info {
+            flex-grow: 1;
+        }
+        .jam-queue-title {
+            font-weight: 600;
+            color: #e2e8f0;
+        }
+        .jam-queue-channel {
+            font-size: 0.875rem;
+            color: #a0aec0;
+        }
+        .jam-queue-remove-btn, .play-from-queue-btn {
+            background: none;
+            border: none;
+            color: #e2e8f0;
+            cursor: pointer;
+            font-size: 1rem;
+            padding: 0.5rem;
+            border-radius: 50%;
+            transition: background-color 0.2s;
+        }
+        .jam-queue-remove-btn:hover, .play-from-queue-btn:hover {
+            background-color: #ef4444; /* Red hover for remove */
+        }
+        .play-from-queue-btn:hover {
+            background-color: #4299e1; /* Blue hover for play */
+        }
+
+        /* Styles to hide the YouTube Player */
+        #player {
+            display: none; /* This will completely hide the YouTube video player iframe */
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 flex flex-col min-h-screen">
+    <header class="bg-gray-800 p-4 shadow-md flex justify-between items-center">
+        <h1 class="text-2xl font-bold">TuneJam</h1>
+        <nav>
+            <button id="goHomeBtn" class="btn-primary">Home</button>
+            <button id="logoutBtn" class="btn-danger ml-2">Logout</button>
+        </nav>
+    </header>
+
+    <main class="container py-6">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="lg:col-span-2">
+                <div class="card">
+                    <h2 class="text-xl font-semibold mb-4">Current Jam: <span id="currentJamName">Loading...</span></h2>
+                    <p class="text-gray-400">Host: <span id="jamHost"></span></p>
+
+                    <div id="player" class="w-full h-auto bg-gray-800 rounded-lg shadow-md mb-4">
+                        </div>
+
+                    <div class="mb-4">
+                        <p class="text-gray-400">Now Playing:</p>
+                        <h3 id="currentSongTitle" class="text-lg font-bold">No song playing</h3>
+                        <p id="currentSongChannel" class="text-gray-400"></p>
+                    </div>
+
+                    <div class="player-controls">
+                        <button id="prevBtn" class="p-2"><i class="fas fa-backward"></i></button>
+                        <button id="playPauseBtn" class="p-4 rounded-full bg-blue-600 hover:bg-blue-700 text-white shadow-lg">
+                            <i class="fas fa-play play-icon"></i>
+                        </button>
+                        <button id="nextBtn" class="p-2"><i class="fas fa-forward"></i></button>
+                    </div>
+                    <div class="progress-bar-container mt-4">
+                        <div id="progressBarFill" class="progress-bar-fill"></div>
+                    </div>
+
+                    <div class="mt-4 flex items-center gap-2">
+                        <i class="fas fa-volume-down text-gray-400"></i>
+                        <input type="range" id="volumeSlider" min="0" max="100" value="100" class="w-full h-2 rounded-lg appearance-none cursor-pointer bg-gray-600 accent-blue-500">
+                        <i class="fas fa-volume-up text-gray-400"></i>
+                    </div>
+
+                    <button id="leaveJamBtn" class="btn-danger w-full mt-6">Leave Jam</button>
+                </div>
+            </div>
+
+            <div>
+                <div class="card h-96 flex flex-col">
+                    <h2 class="text-xl font-semibold mb-4">Jam Chat</h2>
+                    <div id="chatMessages" class="chat-messages flex-grow mb-4">
+                        </div>
+                    <div class="flex gap-2">
+                        <input type="text" id="chatInput" placeholder="Type a message..." class="flex-grow">
+                        <button id="sendChatBtn" class="btn-primary"><i class="fas fa-paper-plane"></i></button>
+                    </div>
+                </div>
+
+                <div class="card mt-6">
+                    <h2 class="text-xl font-semibold mb-4">Add Songs from YouTube</h2>
+                    <div class="flex gap-2 mb-4">
+                        <input type="search" id="searchInput" placeholder="Search YouTube..." class="flex-grow">
+                        <button id="searchBtn" class="btn-primary"><i class="fas fa-search"></i></button>
+                    </div>
+                    <div id="searchResults" class="max-h-60 overflow-y-auto bg-gray-800 rounded-lg">
+                        </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mt-6">
+            <h2 class="text-xl font-semibold mb-4">Jam Queue</h2>
+            <div id="jamQueueList" class="max-h-80 overflow-y-auto bg-gray-800 rounded-lg p-2">
+                <p class="text-center text-gray-400">Queue is empty.</p>
+            </div>
+        </div>
+    </main>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
+    <script>
+        const jamIdParam = new URLSearchParams(window.location.search).get('jam_id');
+        const currentJamId = jamIdParam; // Global variable for the current jam ID
+        let USER_ID = null; // This will be set after fetching from backend
+        let socket;
+
+        let player; // YouTube player object
+        let currentPlayingSong = null; // Stores the current song data (videoId, title, etc.)
+        let currentJamState = {
+            song: null,
+            state: 'paused', // 'playing' or 'paused'
+            time: 0
+        };
+        let jamQueue = []; // To store the queue of songs
+        let currentJamData = null; // To store full jam data including host_id
+
+        // Function to check if the current user is the host of the current jam
+        function isCurrentUserHost() {
+            return currentJamData && currentJamData.host_id === USER_ID;
+        }
+
+        // Helper function for toasts
+        function showToast(message, type = 'info') {
+            const toastContainer = document.getElementById('toastContainer') || (() => {
+                const div = document.createElement('div');
+                div.id = 'toastContainer';
+                div.style.position = 'fixed';
+                div.style.top = '1rem';
+                div.style.right = '1rem';
+                div.style.zIndex = '1000';
+                document.body.appendChild(div);
+                return div;
+            })();
+
+            const toast = document.createElement('div');
+            toast.classList.add('p-3', 'rounded-md', 'shadow-lg', 'text-white', 'mb-2');
+
+            if (type === 'success') {
+                toast.classList.add('bg-green-500');
+            } else if (type === 'error') {
+                toast.classList.add('bg-red-500');
+            } else {
+                toast.classList.add('bg-blue-500');
+            }
+
+            toast.textContent = message;
+            toastContainer.appendChild(toast);
+
+            setTimeout(() => {
+                toast.remove();
+            }, 3000);
+        }
+
+        // Fetch USER_ID from the backend
+        async function fetchUserId() {
+            try {
+                const response = await fetch('/get_user_id');
+                if (response.ok) {
+                    const data = await response.json();
+                    USER_ID = data.user_id;
+                    console.log("Fetched User ID:", USER_ID);
+                } else {
+                    console.error("Failed to fetch user ID:", response.statusText);
+                    // Redirect to login if user ID cannot be fetched (e.g., session expired)
+                    window.location.href = '/login';
+                }
+            } catch (error) {
+                console.error("Error fetching user ID:", error);
+                window.location.href = '/login'; // Redirect on network error
+            }
+        }
+
+        // 2. Load the YouTube IFrame Player API asynchronously
+        function loadYouTubePlayerAPI() {
+            const tag = document.createElement('script');
+            tag.src = "https://www.youtube.com/iframe_api"; // Correct YouTube API URL
+            const firstScriptTag = document.getElementsByTagName('script')[0];
+            firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+        }
+
+        // 3. This function creates an <iframe> (and YouTube player)
+        //    after the API code downloads.
+        window.onYouTubeIframeAPIReady = function () {
+            player = new YT.Player('player', {
+                height: '250', // These dimensions are irrelevant as the player is hidden
+                width: '100%',  // These dimensions are irrelevant as the player is hidden
+                videoId: '', // Will be set dynamically
+                playerVars: {
+                    'playsinline': 1,
+                    'autoplay': 0, // Control autoplay via JS
+                    'controls': 1, // Keep controls visible (e.g. for custom UI, even if player is hidden)
+                    'rel': 0, // Don't show related videos
+                    'modestbranding': 1, // Minimal YouTube branding
+                    'vq': 'small' // Set default video quality to 'small' for lowest bandwidth
+                },
+                events: {
+                    'onReady': onPlayerReady,
+                    'onStateChange': onPlayerStateChange
+                }
+            });
+        }
+
+        // 4. The API will call this function when the video player is ready.
+        function onPlayerReady(event) {
+            console.log("YouTube Player is ready.");
+            // Try to load initial jam state if available
+            fetchCurrentJamState();
+        }
+
+        // 5. The API calls this function when the player's state changes.
+        function onPlayerStateChange(event) {
+            // Update UI based on player state (play/pause icon, progress bar)
+            updatePlayPauseButton();
+            updateProgressBar();
+
+            // If the host is performing an action, send to backend
+            if (isCurrentUserHost()) {
+                if (event.data === YT.PlayerState.PLAYING || event.data === YT.PlayerState.PAUSED) {
+                    const state = event.data === YT.PlayerState.PLAYING ? 'playing' : 'paused';
+                    updateJamStateInBackend(currentPlayingSong, state, player.getCurrentTime());
+                } else if (event.data === YT.PlayerState.ENDED) {
+                    // If song ends, automatically play next if in queue
+                    playNextSong();
+                }
+            }
+        }
+
+        function updatePlayPauseButton() {
+            const playPauseBtn = document.getElementById('playPauseBtn');
+            if (!playPauseBtn || !player || !player.getPlayerState) return;
+
+            const playerState = player.getPlayerState();
+            if (playerState === YT.PlayerState.PLAYING) {
+                playPauseBtn.innerHTML = '<i class="fas fa-pause play-icon"></i>';
+            } else {
+                playPauseBtn.innerHTML = '<i class="fas fa-play play-icon"></i>';
+            }
+        }
+
+        function updateProgressBar() {
+            const progressBarFill = document.getElementById('progressBarFill');
+            if (player && progressBarFill && player.getDuration) {
+                const currentTime = player.getCurrentTime();
+                const duration = player.getDuration();
+                if (duration > 0) {
+                    const progress = (currentTime / duration) * 100;
+                    progressBarFill.style.width = `${progress}%`;
+                }
+            }
+        }
+
+        // Function to update song state in backend (called by host)
+        function updateJamStateInBackend(song, state, time) {
+            if (!currentJamId || !USER_ID) return;
+            socket.emit('update_jam_state', {
+                jam_id: currentJamId,
+                current_song: song, // Pass song data if current song is changing (e.g., on next/prev)
+                state: state,
+                current_time: time
+            });
+        }
+
+
+        // Function to play a song by videoId
+        function playSong(songData, time = 0) {
+            if (!player || !songData || !songData.videoId) {
+                showToast("Player not ready or invalid song data.", 'error');
+                return;
+            }
+
+            // Update current playing song
+            currentPlayingSong = songData;
+            document.getElementById('currentSongTitle').textContent = songData.title;
+            document.getElementById('currentSongChannel').textContent = songData.channel;
+
+            // Load and play the video
+            player.loadVideoById(songData.videoId, time);
+            player.setPlaybackQuality('small'); // Explicitly set quality to small after loading
+
+            player.playVideo();
+
+            updatePlayPauseButton();
+            updateProgressBar();
+        }
+
+        // Function to add a song to the jam queue
+        function addSongToJamQueue(songData) {
+            if (!currentJamId) {
+                showToast("Please join a jam first.", 'error');
+                return;
+            }
+            if (!songData || !songData.videoId) {
+                showToast("Invalid song data.", 'error');
+                return;
+            }
+            socket.emit('add_song_to_jam_queue', { jam_id: currentJamId, song: songData });
+        }
+
+        // Function to handle play/pause button click
+        function togglePlayPause() {
+            if (!player || !player.getPlayerState) return;
+
+            if (!isCurrentUserHost()) {
+                showToast("Only the host can control playback.", 'error');
+                return;
+            }
+
+            const playerState = player.getPlayerState();
+            if (playerState === YT.PlayerState.PLAYING) {
+                player.pauseVideo();
+                updateJamStateInBackend(currentPlayingSong, 'paused', player.getCurrentTime());
+            } else {
+                // If nothing is loaded, try to load first song from queue or current_song
+                if (!currentPlayingSong || !currentPlayingSong.videoId) {
+                    if (jamQueue.length > 0) {
+                        // If queue has items, play the first one
+                        socket.emit('play_song_in_jam', {
+                            jam_id: currentJamId,
+                            song: jamQueue[0],
+                            current_time: 0,
+                            state: 'playing'
+                        });
+                    } else {
+                        showToast("No song is loaded or in queue.", 'info');
+                        return;
+                    }
+                } else {
+                    // If a song is loaded and paused, play it
+                    player.playVideo();
+                    updateJamStateInBackend(currentPlayingSong, 'playing', player.getCurrentTime());
+                }
+            }
+        }
+
+        function playNextSong() {
+            if (!isCurrentUserHost()) {
+                showToast("Only the host can control song skipping.", 'error');
+                return;
+            }
+            if (!currentJamId) {
+                showToast("Not in a jam.", 'error');
+                return;
+            }
+            socket.emit('play_next_song_in_jam', { jam_id: currentJamId, user_id: USER_ID });
+        }
+
+        function playPreviousSong() {
+            if (!isCurrentUserHost()) {
+                showToast("Only the host can control song skipping.", 'error');
+                return;
+            }
+            if (!currentJamId) {
+                showToast("Not in a jam.", 'error');
+                return;
+            }
+            socket.emit('play_previous_song_in_jam', { jam_id: currentJamId, user_id: USER_ID });
+        }
+
+        // Function to display chat messages
+        function displayChatMessage(messageData) {
+            const chatMessagesDiv = document.getElementById('chatMessages');
+            if (!chatMessagesDiv) return;
+
+            const messageElement = document.createElement('div');
+            messageElement.classList.add('chat-message');
+
+            if (messageData.user === 'System') {
+                messageElement.classList.add('system');
+                messageElement.textContent = messageData.message;
+            } else {
+                messageElement.innerHTML = `<span>${messageData.user}:</span> ${messageData.message}`;
+            }
+            chatMessagesDiv.appendChild(messageElement);
+            chatMessagesDiv.scrollTop = chatMessagesDiv.scrollHeight; // Auto-scroll to bottom
+        }
+
+        // Function to display the jam queue
+        function displayJamQueue(queue) {
+            const jamQueueList = document.getElementById('jamQueueList');
+            if (!jamQueueList) return;
+            jamQueueList.innerHTML = ''; // Clear existing queue
+
+            if (queue && queue.length > 0) {
+                queue.forEach(song => {
+                    const songItem = document.createElement('div');
+                    songItem.classList.add('jam-queue-item');
+                    songItem.innerHTML = `
+                        <img src="${song.thumbnail}" alt="Thumbnail" class="jam-queue-thumbnail">
+                        <div class="jam-queue-info">
+                            <div class="jam-queue-title">${song.title}</div>
+                            <div class="jam-queue-channel">${song.channel}</div>
+                        </div>
+                        <button class="play-from-queue-btn" data-video-id="${song.videoId}" data-title="${song.title}" data-channel="${song.channel}" data-thumbnail="${song.thumbnail}"><i class="fas fa-play"></i></button>
+                        `;
+                    jamQueueList.appendChild(songItem);
+                });
+            } else {
+                jamQueueList.innerHTML = '<p class="text-center text-gray-400">Queue is empty.</p>';
+            }
+        }
+
+        // Function to fetch the current jam state from the backend (on initial page load)
+        async function fetchCurrentJamState() {
+            if (!currentJamId) return;
+            try {
+                const response = await fetch(`/get_jam_state?jam_id=${currentJamId}`);
+                const data = await response.json();
+                if (response.ok) {
+                    currentJamData = data.jam_data; // Store full jam data including host_id
+                    document.getElementById('currentJamName').textContent = currentJamData.name || 'Unnamed Jam';
+                    // Fetch host details if needed, otherwise just display ID
+                    document.getElementById('jamHost').textContent = currentJamData.host_id;
+
+                    currentJamState.song = data.current_song;
+                    currentJamState.state = data.current_song_state;
+                    currentJamState.time = data.current_song_time;
+                    jamQueue = data.queue || [];
+
+                    // Update UI based on fetched state
+                    if (currentJamState.song && currentJamState.song.videoId) {
+                        playSong(currentJamState.song, currentJamState.time);
+                        if (currentJamState.state === 'paused') {
+                            player.pauseVideo(); // Pause if state is paused
+                        }
+                    } else {
+                        document.getElementById('currentSongTitle').textContent = "No song playing";
+                        document.getElementById('currentSongChannel').textContent = "";
+                        if (player && player.stopVideo) player.stopVideo();
+                    }
+                    displayJamQueue(jamQueue);
+                    updatePlayPauseButton();
+                    updateProgressBar();
+
+                } else {
+                    showToast(data.error || "Failed to fetch jam state.", 'error');
+                    console.error("Failed to fetch jam state:", data.error);
+                }
+            } catch (error) {
+                console.error("Error fetching current jam state:", error);
+                showToast("Network error fetching jam state.", 'error');
+            }
+        }
+
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            await fetchUserId(); // Ensure USER_ID is available before initializing SocketIO
+
+            // Initialize SocketIO after USER_ID is fetched
+            socket = io();
+
+            const playPauseBtn = document.getElementById('playPauseBtn');
+            const prevBtn = document.getElementById('prevBtn');
+            const nextBtn = document.getElementById('nextBtn');
+            const searchInput = document.getElementById('searchInput');
+            const searchBtn = document.getElementById('searchBtn');
+            const searchResultsDiv = document.getElementById('searchResults');
+            const jamQueueList = document.getElementById('jamQueueList');
+            const currentSongTitleElem = document.getElementById('currentSongTitle');
+            const currentSongChannelElem = document.getElementById('currentSongChannel');
+            const chatInput = document.getElementById('chatInput');
+            const sendChatBtn = document.getElementById('sendChatBtn');
+            const volumeSlider = document.getElementById('volumeSlider');
+            const leaveJamBtn = document.getElementById('leaveJamBtn');
+            const goHomeBtn = document.getElementById('goHomeBtn');
+            const logoutBtn = document.getElementById('logoutBtn');
+
+
+            // Event Listeners
+            if (playPauseBtn) playPauseBtn.addEventListener('click', togglePlayPause);
+            if (prevBtn) prevBtn.addEventListener('click', playPreviousSong);
+            if (nextBtn) nextBtn.addEventListener('click', playNextSong);
+
+            if (volumeSlider) {
+                volumeSlider.addEventListener('input', (event) => {
+                    if (player && player.setVolume) {
+                        player.setVolume(event.target.value);
+                    }
+                });
+            }
+
+            if (searchBtn) {
+                searchBtn.addEventListener('click', async () => {
+                    const query = searchInput.value.trim();
+                    if (!query) {
+                        showToast("Please enter a search query.", 'info');
+                        return;
+                    }
+                    try {
+                        const response = await fetch(`/search_youtube?q=${encodeURIComponent(query)}`);
+                        const data = await response.json();
+                        searchResultsDiv.innerHTML = ''; // Clear previous results
+                        if (response.ok && data.results.length > 0) {
+                            data.results.forEach(song => {
+                                const resultItem = document.createElement('div');
+                                resultItem.classList.add('search-result-item');
+                                resultItem.innerHTML = `
+                                    <img src="${song.thumbnail}" alt="Thumbnail" class="search-result-thumbnail">
+                                    <div class="flex-grow">
+                                        <div class="font-semibold">${song.title}</div>
+                                        <div class="text-gray-400 text-sm">${song.channel}</div>
+                                    </div>
+                                    <button class="btn-primary add-to-jam-btn"
+                                            data-video-id="${song.videoId}"
+                                            data-title="${song.title}"
+                                            data-channel="${song.channel}"
+                                            data-thumbnail="${song.thumbnail}">Add to Jam</button>
+                                `;
+                                searchResultsDiv.appendChild(resultItem);
+                            });
+                        } else {
+                            searchResultsDiv.innerHTML = '<p class="p-4 text-center text-gray-400">No results found.</p>';
+                        }
+                    } catch (error) {
+                        console.error("Error searching YouTube:", error);
+                        showToast("Error searching YouTube. Please try again.", 'error');
+                    }
+                });
+            }
+            if (searchInput) {
+                searchInput.addEventListener('keypress', (event) => {
+                    if (event.key === 'Enter') {
+                        searchBtn.click();
+                    }
+                });
+            }
+
+
+            if (sendChatBtn) {
+                sendChatBtn.addEventListener('click', () => {
+                    const message = chatInput.value.trim();
+                    if (message && currentJamId && USER_ID) {
+                        socket.emit('send_chat_message', { user_id: USER_ID, jam_id: currentJamId, message: message });
+                        chatInput.value = '';
+                    } else if (!currentJamId) {
+                        showToast("You must be in a jam to chat.", 'error');
+                    } else if (!USER_ID) {
+                        showToast("Please log in to chat.", 'error');
+                    }
+                });
+            }
+            if (chatInput) {
+                chatInput.addEventListener('keypress', (event) => {
+                    if (event.key === 'Enter') {
+                        sendChatBtn.click();
+                    }
+                });
+            }
+
+            if (leaveJamBtn) {
+                leaveJamBtn.addEventListener('click', async () => {
+                    if (currentJamId) {
+                        try {
+                            const response = await fetch('/leave_jam', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ jam_id: currentJamId })
+                            });
+                            const data = await response.json();
+                            if (response.ok) {
+                                showToast(data.message, 'success');
+                                socket.emit('leave_jam_chat', { user_id: USER_ID, jam_id: currentJamId });
+                                // Optionally leave the state room too if it's a separate room
+                                socket.emit('leave_jam_state_room', { jam_id: currentJamId }); // You'd need to implement this in app.py
+                                window.location.href = '/dashboard'; // Go back to dashboard
+                            } else {
+                                showToast(data.error || "Failed to leave jam.", 'error');
+                            }
+                        } catch (error) {
+                            console.error("Error leaving jam:", error);
+                            showToast("Network error leaving jam.", 'error');
+                        }
+                    }
+                });
+            }
+
+            if (goHomeBtn) {
+                goHomeBtn.addEventListener('click', () => {
+                    window.location.href = '/dashboard';
+                });
+            }
+
+            if (logoutBtn) {
+                logoutBtn.addEventListener('click', async () => {
+                    try {
+                        const response = await fetch('/logout', { method: 'POST' });
+                        if (response.ok) {
+                            window.location.href = '/login';
+                        } else {
+                            showToast("Failed to logout.", 'error');
+                        }
+                    } catch (error) {
+                        console.error("Error logging out:", error);
+                        showToast("Network error during logout.", 'error');
+                    }
+                });
+            }
+
+
+            // Add event listener for "Add to Jam" buttons dynamically
+            if (searchResultsDiv) {
+                searchResultsDiv.addEventListener('click', (event) => {
+                    if (event.target.classList.contains('add-to-jam-btn')) {
+                        const songData = {
+                            videoId: event.target.dataset.videoId,
+                            title: event.target.dataset.title,
+                            channel: event.target.dataset.channel,
+                            thumbnail: event.target.dataset.thumbnail
+                        };
+                        addSongToJamQueue(songData);
+                    }
+                });
+            }
+            // Add event listener for "Play Song" from queue/playlist
+            if (jamQueueList) {
+                jamQueueList.addEventListener('click', (event) => {
+                    if (event.target.classList.contains('play-from-queue-btn')) {
+                        const songData = {
+                            videoId: event.target.dataset.videoId,
+                            title: event.target.dataset.title,
+                            channel: event.target.dataset.channel,
+                            thumbnail: event.target.dataset.thumbnail
+                        };
+                        if (isCurrentUserHost()) {
+                            // Emit to backend to set this song as current playing
+                            socket.emit('play_song_in_jam', {
+                                jam_id: currentJamId,
+                                song: songData,
+                                current_time: 0, // Start from beginning
+                                state: 'playing'
+                            });
+                        } else {
+                            showToast("Only the host can play songs from the queue.", 'error');
+                        }
+                    }
+                });
+            }
+             
+            function addSongToQueue(song) {
+  fetch('/add_to_queue', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ song })
+  }).then(res => res.json())
+    .then(data => {
+      showToast(data.message || "Added to queue");
+    });
+}
+
+            // SocketIO event listeners
+            socket.on('connect', () => {
+                console.log('Connected to SocketIO server.');
+                if (currentJamId && USER_ID) {
+                    socket.emit('join_jam_chat', { user_id: USER_ID, jam_id: currentJamId });
+                    socket.emit('join_jam_state_room', { jam_id: currentJamId }); // Join room for state updates
+                }
+            });
+
+            socket.on('disconnect', () => {
+                console.log('Disconnected from SocketIO server.');
+            });
+
+            socket.on('chat_message', (data) => {
+                displayChatMessage(data);
+            });
+
+            socket.on('jam_state_update', (data) => {
+                console.log("Received jam state update:", data);
+                currentJamState.song = data.current_song;
+                currentJamState.state = data.current_song_state;
+                currentJamState.time = data.current_song_time;
+
+                if (currentJamState.song && currentJamState.song.videoId) {
+                    // If the song ID has changed or player is not loaded with current song
+                    if (!player || player.getVideoData().video_id !== currentJamState.song.videoId) {
+                        playSong(currentJamState.song, currentJamState.time);
+                    } else {
+                        // Song is the same, just update state/time
+                        if (currentJamState.state === 'playing' && player.getPlayerState() !== YT.PlayerState.PLAYING) {
+                            player.playVideo();
+                            player.seekTo(currentJamState.time, true); // Seek to current time
+                        } else if (currentJamState.state === 'paused' && player.getPlayerState() !== YT.PlayerState.PAUSED) {
+                            player.pauseVideo();
+                            player.seekTo(currentJamState.time, true); // Seek to current time
+                        }
+                    }
+
+                    // Update song info display
+                    currentSongTitleElem.textContent = currentJamState.song.title;
+                    currentSongChannelElem.textContent = currentJamState.song.channel;
+                    updatePlayPauseButton();
+                    updateProgressBar();
+                } else {
+                    // No song currently playing
+                    currentSongTitleElem.textContent = "No song playing";
+                    currentSongChannelElem.textContent = "";
+                    if (player && player.stopVideo) player.stopVideo();
+                    updatePlayPauseButton();
+                    updateProgressBar();
+                }
+            });
+
+            socket.on('jam_queue_update', (data) => {
+                console.log("Received jam queue update:", data);
+                jamQueue = data.queue;
+                displayJamQueue(jamQueue); // Function to render the queue in HTML
+            });
+
+            socket.on('error', (data) => {
+                showToast(data.message, 'error');
+                console.error("Socket Error:", data.message);
+            });
+
+            // Initial loading of YouTube API
+            loadYouTubePlayerAPI();
+        });
+    </script>
+</body>
+</html>

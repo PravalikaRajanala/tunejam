@@ -1,15 +1,18 @@
+import os
+import json # New import for loading JSON from environment variable
+import eventlet # New import for SocketIO async mode. Ensure 'eventlet' is in requirements.txt
+eventlet.monkey_patch() # Patch standard library for async I/O
+
 from flask import Flask, request, Response, abort, render_template, send_from_directory, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import yt_dlp
 import logging
-import os
 import uuid
 from urllib import request as url_request
 import re
 from googleapiclient.discovery import build
 import random
-import json
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
 
@@ -20,11 +23,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # --- CONFIGURATION ---
-# IMPORTANT: Replace with your actual Google Drive API Key.
-# This is a PUBLIC API key from Google Cloud Console -> APIs & Services -> Credentials.
-GOOGLE_DRIVE_API_KEY = 'AIzaSyBUFh77a5swJRUcGCb5-V3V3DfaHGkI8-0' # You must replace this with your actual API Key!
+# IMPORTANT: Retrieve Google Drive API Key from environment variable for security.
+# In Vercel, set an environment variable named GOOGLE_DRIVE_API_KEY with your actual key.
+GOOGLE_DRIVE_API_KEY = os.environ.get('GOOGLE_DRIVE_API_KEY', 'YOUR_GOOGLE_DRIVE_API_KEY_HERE') # Fallback for local testing
 
 # Define the directory for downloaded audio files
+# WARNING: On Vercel, this directory is ephemeral. Files downloaded here will not persist
+# between requests or deployments. For persistent storage, use cloud storage (e.g., GCS, S3).
 DOWNLOAD_DIR = 'downloaded_audio'
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
@@ -33,19 +38,39 @@ if not os.path.exists(DOWNLOAD_DIR):
 DRIVE_SERVICE = build('drive', 'v3', developerKey=GOOGLE_DRIVE_API_KEY)
 
 # --- Firebase Admin SDK Initialization (for Firestore) ---
-# IMPORTANT: Replace 'firebase_admin_key.json' with the path to your downloaded Firebase Admin SDK JSON key file.
-FIREBASE_ADMIN_KEY_FILE = 'firebase_admin_key.json' 
-
+# IMPORTANT: For production, store the content of your firebase_admin_key.json
+# file as a JSON string in a Vercel environment variable named 'FIREBASE_ADMIN_CREDENTIALS_JSON'.
+# Never commit your .json key file to your repository.
+db = None # Initialize db as None
 try:
-    if not firebase_admin._apps: # Initialize Firebase Admin SDK only once
-        cred = credentials.Certificate(FIREBASE_ADMIN_KEY_FILE)
-        firebase_admin.initialize_app(cred)
-    db = firestore.client() # Get Firestore client
-    logging.info("Firebase Admin SDK and Firestore initialized successfully.")
+    firebase_credentials_json = os.environ.get('FIREBASE_ADMIN_CREDENTIALS_JSON')
+
+    if firebase_credentials_json:
+        # Load credentials from environment variable
+        cred_dict = json.loads(firebase_credentials_json)
+        cred = credentials.Certificate(cred_dict)
+        if not firebase_admin._apps: # Initialize Firebase Admin SDK only once
+            firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        logging.info("Firebase Admin SDK initialized successfully from environment variable.")
+    else:
+        # Fallback for local development if environment variable is not set
+        # This part should ideally be used ONLY for local development
+        # and 'firebase_admin_key.json' should be in your .gitignore
+        FIREBASE_ADMIN_KEY_FILE_LOCAL = 'firebase_admin_key.json' # Adjust path for local testing
+        if os.path.exists(FIREBASE_ADMIN_KEY_FILE_LOCAL):
+            if not firebase_admin._apps: # Initialize Firebase Admin SDK only once
+                cred = credentials.Certificate(FIREBASE_ADMIN_KEY_FILE_LOCAL)
+                firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            logging.info("Firebase Admin SDK initialized successfully from local file (for development).")
+        else:
+            logging.error("Firebase Admin SDK credentials not found. Set 'FIREBASE_ADMIN_CREDENTIALS_JSON' "
+                          "environment variable on Vercel or provide 'firebase_admin_key.json' for local development.")
+            db = None # Ensure db is None if initialization fails
 except Exception as e:
-    logging.error(f"Error initializing Firebase Admin SDK or Firestore: {e}")
-    logging.error("Please ensure 'firebase_admin_key.json' is in the correct path and valid.")
-    db = None # Set db to None if initialization fails
+    logging.error(f"Error initializing Firebase Admin SDK: {e}")
+    db = None
 
 # This dictionary will store active jam sessions primarily for SocketIO tracking.
 # The authoritative data will reside in Firestore.
@@ -54,19 +79,24 @@ sids_in_jams = {} # { socket_id: { 'jam_id': '...', 'nickname': '...' } }
 
 # --- Helper for getting base URL ---
 def get_base_url():
-    # Attempt to get the base URL from the request, otherwise default
-    return request.host_url # This typically gives http://127.0.0.1:5000
+    # In a Vercel environment, request.base_url or request.host_url
+    # should correctly reflect the public URL.
+    # For local development, it will be http://127.0.0.1:5000/
+    return request.host_url
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    # This route serves the main application page.
+    # The client-side JavaScript will read the jam_id from the URL.
+    # For direct root access, initial_jam_id will be None.
+    return render_template('index.html', initial_jam_id='')
 
-# NEW ROUTE: To handle joining a session via a URL
+# NEW ROUTE: To handle joining a session via a URL (e.g., /join/some_jam_id)
 @app.route('/join/<jam_id>')
 def join_by_link(jam_id):
     logging.info(f"Received request to join jam via link: {jam_id}")
-    # This route serves the main application page.
-    # The client-side JavaScript will read the jam_id from the URL.
+    # This route simply serves the main application page and passes the jam_id.
+    # The client-side JavaScript will then read the jam_id from the URL.
     return render_template('index.html', initial_jam_id=jam_id)
 
 
@@ -180,6 +210,9 @@ def search_googledrive_folder(folder_id):
     query = request.args.get('query', '')
     logging.info(f"Searching Google Drive folder {folder_id} for audio files with query: '{query}'")
 
+    if not GOOGLE_DRIVE_API_KEY or GOOGLE_DRIVE_API_KEY == 'YOUR_GOOGLE_DRIVE_API_KEY_HERE':
+        return jsonify({"error": "Google Drive API Key is not configured on the server."}), 500
+
     try:
         q_param = f"'{folder_id}' in parents and mimeType contains 'audio/' and trashed = false"
         if query:
@@ -218,6 +251,10 @@ def search_googledrive_folder(folder_id):
 @app.route('/get_random_googledrive_songs/<folder_id>')
 def get_random_googledrive_songs(folder_id):
     logging.info(f"Getting random songs from Google Drive folder: {folder_id}")
+
+    if not GOOGLE_DRIVE_API_KEY or GOOGLE_DRIVE_API_KEY == 'YOUR_GOOGLE_DRIVE_API_KEY_HERE':
+        return jsonify({"error": "Google Drive API Key is not configured on the server."}), 500
+
     try:
         q_param = f"'{folder_id}' in parents and mimeType contains 'audio/' and trashed = false"
         fields = "files(id, name, mimeType, thumbnailLink, size)"
@@ -268,13 +305,14 @@ def download_youtube_audio(video_id):
     unique_filename = f"{video_id}-{uuid.uuid4().hex}.mp3"
     filepath = os.path.join(DOWNLOAD_DIR, unique_filename)
 
+    # Check if file already exists in local temp storage
     if os.path.exists(filepath):
         logging.info(f"Serving existing downloaded audio for {video_id} at {filepath}")
         return jsonify({
             "audio_url": f"/local_audio/{unique_filename}",
             "title": "Existing Download",
             "artist": "Unknown",
-            "album_art": ""
+            "album_art": "" # This might need to be fetched if not stored
         })
 
     ydl_opts = {
@@ -443,6 +481,8 @@ def handle_disconnect():
                 logging.error(f"Error handling disconnect for jam {jam_id} in Firestore: {e}")
         
         # Clean up local socketio tracking
+        # Note: Local jam_sessions cache will eventually become stale.
+        # Firestore is the source of truth.
         if jam_id in jam_sessions and jam_sessions[jam_id]['host_sid'] == request.sid:
              del jam_sessions[jam_id] # Remove local tracking for host-ended session
         elif request.sid in jam_sessions.get(jam_id, {}).get('participants', {}):
@@ -464,7 +504,10 @@ def create_session(data):
     
     try:
         # Create a new document in 'jam_sessions' collection, Firestore generates ID
-        new_jam_doc = db.collection('jam_sessions').add({
+        new_jam_doc_ref = db.collection('jam_sessions').document() # Create document reference first
+        jam_id = new_jam_doc_ref.id # Get the ID
+
+        initial_jam_data = {
             'name': jam_name,
             'host_sid': request.sid,
             'participants': {request.sid: nickname}, # Store SID to nickname mapping
@@ -477,15 +520,17 @@ def create_session(data):
             },
             'created_at': firestore.SERVER_TIMESTAMP,
             'is_active': True # Mark session as active
-        })
-        jam_id = new_jam_doc[1].id # Get the ID of the newly created document
+        }
+        new_jam_doc_ref.set(initial_jam_data) # Set the document with the initial data
 
-        jam_sessions[jam_id] = { # Update local cache for quick lookup
+
+        # Update local cache for quick lookup (for host, participants will rely on Firestore)
+        jam_sessions[jam_id] = {
             'name': jam_name,
             'host_sid': request.sid,
             'participants': {request.sid: nickname},
             'playlist': [],
-            'playback_state': {
+            'playback_state': { # Local cache doesn't need server timestamp here
                 'current_track_index': 0,
                 'current_playback_time': 0,
                 'is_playing': False,
@@ -498,15 +543,15 @@ def create_session(data):
         logging.info(f"Jam session '{jam_name}' created with ID: {jam_id} by host {nickname} ({request.sid})")
 
         # Construct the shareable link using the base URL
-        shareable_link = f"{get_base_url()}join/{jam_id}" # <--- MODIFIED LINE
+        shareable_link = f"{get_base_url()}join/{jam_id}"
 
         emit('session_created', {
             'jam_id': jam_id,
             'jam_name': jam_name,
             'is_host': True,
-            'initial_state': jam_sessions[jam_id]['playback_state'], # Send initial local state
-            'participants': list(jam_sessions[jam_id]['participants'].values()),
-            'shareable_link': shareable_link # <--- NEW FIELD
+            'initial_state': initial_jam_data['playback_state'], # Send initial Firestore state
+            'participants': list(initial_jam_data['participants'].values()),
+            'shareable_link': shareable_link
         })
 
     except Exception as e:
@@ -537,12 +582,12 @@ def join_session(data):
 
         jam_data = jam_doc.to_dict()
         
-        # Check if already a participant
+        # Check if already a participant (based on current socket ID)
         if request.sid in jam_data.get('participants', {}):
             logging.info(f"Client {request.sid} already in jam {jam_id}")
-            # Instead of failing, acknowledge successful join for existing participant
+            # Still send initial state and success to ensure client is synced
             playback_state = jam_data.get('playback_state', {})
-            emit('sync_playback_state', {
+            emit('session_join_success', { # Changed event name for clarity
                 'jam_id': jam_id,
                 'current_track_index': playback_state.get('current_track_index', 0),
                 'current_playback_time': playback_state.get('current_playback_time', 0),
@@ -550,8 +595,10 @@ def join_session(data):
                 'playlist': jam_data.get('playlist', []),
                 'jam_name': jam_data.get('name', 'Unnamed Jam'),
                 'last_synced_at': playback_state.get('timestamp', firestore.SERVER_TIMESTAMP),
-                'participants': list(jam_data.get('participants', {}).values()) # Use existing participants
+                'participants': jam_data.get('participants', {}), # Send dict to distinguish host/nickname
+                'nickname_used': nickname # Send back the nickname that was used
             })
+            join_room(jam_id) # Ensure the socket is in the room
             return
 
 
@@ -563,8 +610,14 @@ def join_session(data):
         # Update local tracking (optional, but good for quick SID-to-jam mapping)
         # Ensure the jam_id exists in jam_sessions before updating participants
         if jam_id not in jam_sessions:
-            jam_sessions[jam_id] = jam_data # Populate local cache if not already there
-        jam_sessions[jam_id]['participants'][request.sid] = nickname
+            # If server restarted or jam wasn't in local cache, populate it.
+            jam_sessions[jam_id] = {
+                'name': jam_data.get('name', 'Unnamed Jam'),
+                'host_sid': jam_data.get('host_sid'),
+                'playlist': jam_data.get('playlist', []),
+                'playback_state': jam_data.get('playback_state', {})
+            }
+        jam_sessions[jam_id]['participants'] = updated_participants # Update local cache
         sids_in_jams[request.sid] = {'jam_id': jam_id, 'nickname': nickname}
 
         join_room(jam_id)
@@ -572,7 +625,7 @@ def join_session(data):
 
         # Send current state to the newly joined participant (from Firestore data)
         playback_state = jam_data.get('playback_state', {})
-        emit('sync_playback_state', {
+        emit('session_join_success', { # Changed event name for clarity
             'jam_id': jam_id,
             'current_track_index': playback_state.get('current_track_index', 0),
             'current_playback_time': playback_state.get('current_playback_time', 0),
@@ -580,13 +633,15 @@ def join_session(data):
             'playlist': jam_data.get('playlist', []),
             'jam_name': jam_data.get('name', 'Unnamed Jam'),
             'last_synced_at': playback_state.get('timestamp', firestore.SERVER_TIMESTAMP), # Use server timestamp
-            'participants': list(updated_participants.values())
+            'participants': updated_participants,
+            'nickname_used': nickname
         })
 
         # Notify all other participants in the room about the new participant
+        # Send the updated_participants dict so clients can re-render with nicknames
         emit('update_participants', {
             'jam_id': jam_id,
-            'participants': list(updated_participants.values())
+            'participants': updated_participants
         }, room=jam_id, include_self=False)
 
     except Exception as e:
@@ -609,9 +664,10 @@ def sync_playback_state(data):
             return
         
         jam_data = jam_doc.to_dict()
+        # Ensure only the designated host can update the state
         if jam_data.get('host_sid') != request.sid:
             logging.warning(f"Non-host {request.sid} attempted to sync state for jam {jam_id}")
-            return # Only the host can sync state
+            return
 
         # Update Firestore with the new state
         new_playback_state = {
@@ -621,14 +677,12 @@ def sync_playback_state(data):
             'timestamp': firestore.SERVER_TIMESTAMP # Always update with server timestamp
         }
         
-        # Use a transaction for consistent updates if multiple fields are being updated
-        # or if there's a risk of conflicts. For simple updates, direct update is fine.
         db.collection('jam_sessions').document(jam_id).update({
             'playback_state': new_playback_state,
             'playlist': data.get('playlist', []) # Host sends full playlist
         })
 
-        # Don't emit from here; client-side will listen to Firestore changes and update.
+        # No emit from here; client-side will listen to Firestore changes and update.
         # This prevents a loop of SocketIO events when using Firestore as the source of truth.
 
     except Exception as e:
@@ -720,10 +774,14 @@ def remove_song_from_jam(data):
         logging.error(f"Error removing song from jam {jam_id} in Firestore: {e}")
 
 
+# When running on Vercel, the application is served by a WSGI server (e.g., Gunicorn),
+# which handles starting the Flask app. The 'socketio.run(app, ...)' call is only for
+# local development with Flask's built-in server.
 if __name__ == '__main__':
-    if GOOGLE_DRIVE_API_KEY == 'AIzaSyBUFh77a5swJRUcGCb5-V3V3DfaHGkI8-0': # Changed from placeholder for clarity
+    if GOOGLE_DRIVE_API_KEY == 'YOUR_GOOGLE_DRIVE_API_KEY_HERE':
         logging.warning("Google Drive API Key is not configured in app.py. Google Drive features might not work.")
     if db is None:
         logging.error("Firestore database is not initialized. Jam Session feature will not work.")
     
+    # This line is for local development only. Vercel will run `app` directly.
     socketio.run(app, debug=True, port=5000)

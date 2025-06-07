@@ -2,6 +2,7 @@ import os
 import json # New import for loading JSON from environment variable
 import eventlet # New import for SocketIO async mode. Ensure 'eventlet' is in requirements.txt
 eventlet.monkey_patch() # Patch standard library for async I/O
+import tempfile
 
 from flask import Flask, request, Response, abort, render_template, send_from_directory, jsonify
 from flask_cors import CORS

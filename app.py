@@ -1,1044 +1,729 @@
-# app.py
-from flask import Flask, request, jsonify, render_template, redirect, url_for, session
+from flask import Flask, request, Response, abort, render_template, send_from_directory, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
-import requests
+import yt_dlp
+import logging
 import os
+import uuid
+from urllib import request as url_request
+import re
+from googleapiclient.discovery import build
+import random
+import json
 import firebase_admin
-from google.cloud import firestore # Keep this as 'firestore' for Timestamp access
-from firebase_admin import credentials, firestore as admin_firestore, auth as firebase_auth # Alias firebase_admin.firestore
-from firebase_admin import exceptions as firebase_exceptions
-import time # For tracking last_seen in active users
-from functools import wraps # For decorators
-import secrets # For generating secure random strings
-import string # For character sets for random strings
-import hashlib # For hashing passwords
-import traceback # Import traceback for detailed error logging
-import uuid # <--- ADDED THIS IMPORT FOR uuid.uuid4()
+from firebase_admin import credentials, firestore, auth
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', '9dbd7f596fcc558bdc9cf3a4d153dc4243d3bff01e66f14f69f68edb7f6fed17') # IMPORTANT: CHANGE THIS IN PRODUCTION!
-CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}}, supports_credentials=True)
-socketio = SocketIO(app, cors_allowed_origins="*", manage_session=False) # manage_session=False as Flask handles sessions
+CORS(app)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Firebase Admin SDK Initialization ---
-# IMPORTANT: Replace 'serviceAccountKey.json' with the actual path to your downloaded JSON key.
-# For example: 'path/to/your/downloaded-firebase-adminsdk-xxxxx-firebase-adminsdk-xxxxx.json'
-# It's best practice to keep this file out of version control and load its path from an environment variable in production.
-FIREBASE_SERVICE_ACCOUNT_KEY_FILE = os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY_PATH', 'serviceAccountKey.json')
-APP_ID = "tunejam_app" # This should match the document ID in 'artifacts' collection
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-db = None # Initialize db to None
+# --- CONFIGURATION ---
+# IMPORTANT: Replace with your actual Google Drive API Key.
+# This is a PUBLIC API key from Google Cloud Console -> APIs & Services -> Credentials.
+GOOGLE_DRIVE_API_KEY = 'AIzaSyBUFh77a5swJRUcGCb5-V3V3DfaHGkI8-0' # You must replace this with your actual API Key!
+
+# Define the directory for downloaded audio files
+DOWNLOAD_DIR = 'downloaded_audio'
+if not os.path.exists(DOWNLOAD_DIR):
+    os.makedirs(DOWNLOAD_DIR)
+
+# Initialize Google Drive API service
+DRIVE_SERVICE = build('drive', 'v3', developerKey=GOOGLE_DRIVE_API_KEY)
+
+# --- Firebase Admin SDK Initialization (for Firestore) ---
+# IMPORTANT: Replace 'firebase_admin_key.json' with the path to your downloaded Firebase Admin SDK JSON key file.
+FIREBASE_ADMIN_KEY_FILE = 'firebase_admin_key.json' 
 
 try:
-    if not os.path.exists(FIREBASE_SERVICE_ACCOUNT_KEY_FILE):
-        raise FileNotFoundError(f"Firebase service account key not found at: {FIREBASE_SERVICE_ACCOUNT_KEY_FILE}")
-
-    if not firebase_admin._apps:
-        cred = credentials.Certificate(FIREBASE_SERVICE_ACCOUNT_KEY_FILE)
+    if not firebase_admin._apps: # Initialize Firebase Admin SDK only once
+        cred = credentials.Certificate(FIREBASE_ADMIN_KEY_FILE)
         firebase_admin.initialize_app(cred)
-        print("Firebase Admin SDK initialized successfully.")
-
-    # Get the Firestore client AFTER initialization
-    db = admin_firestore.client()
-    print("Firestore client initialized successfully.")
-
-except FileNotFoundError as e:
-    print(f"Error initializing Firebase Admin SDK: {e}")
-    print(f"Please ensure the service account key path '{FIREBASE_SERVICE_ACCOUNT_KEY_FILE}' is correct and the file exists.")
-    exit(1) # Exit if the key file is not found, as the app won't function without Firebase.
+    db = firestore.client() # Get Firestore client
+    logging.info("Firebase Admin SDK and Firestore initialized successfully.")
 except Exception as e:
-    print(f"An unexpected error occurred during Firebase Admin SDK initialization: {e}")
-    traceback.print_exc() # Print full traceback for debugging
-    exit(1) # Exit on other initialization errors
+    logging.error(f"Error initializing Firebase Admin SDK or Firestore: {e}")
+    logging.error("Please ensure 'firebase_admin_key.json' is in the correct path and valid.")
+    db = None # Set db to None if initialization fails
 
+# This dictionary will store active jam sessions primarily for SocketIO tracking.
+# The authoritative data will reside in Firestore.
+jam_sessions = {}
+sids_in_jams = {} # { socket_id: { 'jam_id': '...', 'nickname': '...' } }
 
-# --- Helper functions ---
-def generate_unique_jam_code(length=6):
-    """Generates a unique 6-character alphanumeric jam code."""
-    characters = string.ascii_letters + string.digits
-    while True:
-        code = ''.join(secrets.choice(characters) for _ in range(length))
-        # Check if code already exists in Firestore
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(code)
-        if not jam_ref.get().exists:
-            return code
+# --- Helper for getting base URL ---
+def get_base_url():
+    # Attempt to get the base URL from the request, otherwise default
+    return request.host_url # This typically gives http://127.0.0.1:5000
 
-def hash_password(password):
-    """Hashes a password using SHA256."""
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return jsonify({"error": "Unauthorized: No user session."}), 401
-        return f(*args, **kwargs)
-    return decorated_function
-
-# --- Routes ---
 @app.route('/')
 def index():
-    if 'user_id' in session:
-        return redirect(url_for('dashboard'))
-    return render_template('login.html')
+    return render_template('index.html')
 
-@app.route('/register', methods=['POST'])
-def register():
-    data = request.get_json()
-    id_token = data.get('id_token')
-    user_name = data.get('name') # Get name from frontend
+# NEW ROUTE: To handle joining a session via a URL
+@app.route('/join/<jam_id>')
+def join_by_link(jam_id):
+    logging.info(f"Received request to join jam via link: {jam_id}")
+    # This route serves the main application page.
+    # The client-side JavaScript will read the jam_id from the URL.
+    return render_template('index.html', initial_jam_id=jam_id)
 
-    if not id_token:
-        return jsonify({"error": "ID token is required."}), 400
+
+@app.route('/local_audio/<path:filename>')
+def serve_local_audio(filename):
+    try:
+        return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=False)
+    except FileNotFoundError:
+        abort(404, description=f"File not found: {filename}")
+
+@app.route('/proxy_googledrive_audio/<file_id>')
+def proxy_googledrive_audio(file_id):
+    logging.info(f"Received request to proxy Google Drive audio for file ID: {file_id}")
+    google_drive_url = f"https://docs.google.com/uc?export=download&id={file_id}&key={GOOGLE_DRIVE_API_KEY}"
+    range_header = request.headers.get('Range')
+    start_byte = 0
+    end_byte = None
+    total_length = None
+
+    if range_header:
+        match = re.search(r'bytes=(\d+)-(\d*)', range_header)
+        if match:
+            start_byte = int(match.group(1))
+            if match.group(2):
+                end_byte = int(match.group(2))
+        logging.info(f"Parsed Range header: start_byte={start_byte}, end_byte={end_byte}")
 
     try:
-        decoded_token = firebase_auth.verify_id_token(id_token)
-        user_id = decoded_token['uid']
-        email = decoded_token.get('email')
+        req = url_request.Request(google_drive_url)
+        if range_header:
+            req.add_header('Range', range_header)
 
-        # Create or update a user document in Firestore
-        db.collection('users').document(user_id).set({
-            'email': email,
-            'created_at': firestore.SERVER_TIMESTAMP,
-            'name': user_name or email.split('@')[0] # Use provided name or default to part of email
+        logging.info(f"Attempting to fetch Google Drive audio from: {google_drive_url} with Range: {range_header}")
+        drive_response = url_request.urlopen(req)
+
+        content_type = drive_response.info().get_content_type()
+        content_length = drive_response.info().get('Content-Length')
+        content_range = drive_response.info().get('Content-Range')
+
+        if content_length:
+            total_length = int(content_length)
+            if content_range:
+                total_match = re.search(r'bytes \d+-\d+/(\d+)', content_range)
+                if total_match:
+                    total_length = int(total_match.group(1))
+
+        if total_length is None:
+            try:
+                head_req = url_request.Request(google_drive_url, method='HEAD')
+                head_response = url_request.urlopen(head_req)
+                total_length_head = head_response.info().get('Content-Length')
+                if total_length_head:
+                    total_length = int(total_length_head)
+                    logging.info(f"Obtained total length from HEAD request: {total_length}")
+            except Exception as e:
+                logging.warning(f"Failed to get total length from HEAD request: {e}")
+
+        def generate_audio_stream():
+            try:
+                chunk_size = 1024 * 64
+                while True:
+                    chunk = drive_response.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+                logging.info(f"Finished streaming Google Drive audio for {file_id}")
+            except Exception as e:
+                logging.error(f"Error streaming Google Drive audio: {e}")
+                pass
+
+        response = Response(generate_audio_stream(), mimetype=content_type or 'application/octet-stream')
+        response.headers['Accept-Ranges'] = 'bytes'
+
+        if range_header and total_length is not None:
+            if end_byte is None:
+                end_byte = total_length - 1
+            
+            actual_start = start_byte
+            actual_end = end_byte if end_byte is not None else total_length - 1
+            
+            if content_range:
+                range_match = re.search(r'bytes (\d+)-(\d+)/(\d+)', content_range)
+                if range_match:
+                    actual_start = int(range_match.group(1))
+                    actual_end = int(range_match.group(2))
+                    total_length = int(range_match.group(3))
+            
+            response.status_code = 206
+            response.headers['Content-Range'] = f"bytes {actual_start}-{actual_end}/{total_length}"
+            response.headers['Content-Length'] = actual_end - actual_start + 1
+            logging.info(f"Serving partial content: Content-Range: {response.headers['Content-Range']}, Content-Length: {response.headers['Content-Length']}")
+        elif total_length is not None:
+            response.status_code = 200
+            response.headers['Content-Length'] = total_length
+            logging.info(f"Serving full content: Content-Length: {total_length}")
+        else:
+            response.status_code = 200
+            logging.warning("Serving full content without Content-Length (unknown total size).")
+
+        return response
+
+    except url_request.URLError as e:
+        logging.error(f"URLError when proxying Google Drive audio for {file_id}: {e}")
+        return jsonify({"error": f"Failed to access Google Drive file: {e.reason}"}), 500
+    except Exception as e:
+        logging.error(f"Unexpected error when proxying Google Drive audio for {file_id}: {e}")
+        return jsonify({"error": f"Internal server error: {e}"}), 500
+
+@app.route('/search_googledrive_folder/<folder_id>')
+def search_googledrive_folder(folder_id):
+    query = request.args.get('query', '')
+    logging.info(f"Searching Google Drive folder {folder_id} for audio files with query: '{query}'")
+
+    try:
+        q_param = f"'{folder_id}' in parents and mimeType contains 'audio/' and trashed = false"
+        if query:
+            q_param += f" and fullText contains '{query}'"
+
+        fields = "files(id, name, mimeType, thumbnailLink, size)"
+
+        results = DRIVE_SERVICE.files().list(
+            q=q_param,
+            fields=fields,
+            pageSize=20
+        ).execute()
+
+        items = results.get('files', [])
+        songs = []
+        for item in items:
+            album_art = item.get('thumbnailLink') or "https://placehold.co/128x128/0F9D58/FFFFFF?text=Drive"
+            
+            songs.append({
+                'fileId': item['id'],
+                'title': item['name'],
+                'artist': 'Google Drive',
+                'albumArtSrc': album_art,
+                'type': 'googledrive'
+            })
+        
+        logging.info(f"Found {len(songs)} songs in Google Drive folder {folder_id} for query '{query}'")
+        return jsonify(songs)
+
+    except Exception as e:
+        logging.error(f"Error searching Google Drive folder {folder_id}: {e}")
+        if "API key not valid" in str(e) or "API has not been used in project" in str(e) or "Google Drive API is not enabled" in str(e):
+             return jsonify({"error": "Google Drive API Key is invalid or API is not enabled. Please check server logs."}), 500
+        return jsonify({"error": f"Failed to search Google Drive folder: {e}"}), 500
+
+@app.route('/get_random_googledrive_songs/<folder_id>')
+def get_random_googledrive_songs(folder_id):
+    logging.info(f"Getting random songs from Google Drive folder: {folder_id}")
+    try:
+        q_param = f"'{folder_id}' in parents and mimeType contains 'audio/' and trashed = false"
+        fields = "files(id, name, mimeType, thumbnailLink, size)"
+        
+        all_items = []
+        page_token = None
+        while True:
+            results = DRIVE_SERVICE.files().list(
+                q=q_param,
+                fields=fields,
+                pageSize=1000,
+                pageToken=page_token
+            ).execute()
+            all_items.extend(results.get('files', []))
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+
+        songs = []
+        for item in all_items:
+            album_art = item.get('thumbnailLink') or "https://placehold.co/128x128/0F9D58/FFFFFF?text=Drive"
+            songs.append({
+                'fileId': item['id'],
+                'title': item['name'],
+                'artist': 'Google Drive',
+                'albumArtSrc': album_art,
+                'type': 'googledrive'
+            })
+        
+        random.shuffle(songs)
+        num_songs_to_return = min(len(songs), 20)
+        random_songs = songs[:num_songs_to_return]
+
+        logging.info(f"Returned {len(random_songs)} random songs from Google Drive folder {folder_id}")
+        return jsonify(random_songs)
+
+    except Exception as e:
+        logging.error(f"Error getting random songs from Google Drive folder {folder_id}: {e}")
+        if "API key not valid" in str(e) or "API has not been used in project" in str(e) or "Google Drive API is not enabled" in str(e):
+             return jsonify({"error": "Google Drive API Key is invalid or API is not enabled. Please check server logs."}), 500
+        return jsonify({"error": f"Failed to get random songs from Google Drive folder: {e}"}), 500
+
+
+@app.route('/download_youtube_audio/<video_id>', methods=['GET'])
+def download_youtube_audio(video_id):
+    logging.info(f"Received request to download YouTube audio for video ID: {video_id}")
+
+    unique_filename = f"{video_id}-{uuid.uuid4().hex}.mp3"
+    filepath = os.path.join(DOWNLOAD_DIR, unique_filename)
+
+    if os.path.exists(filepath):
+        logging.info(f"Serving existing downloaded audio for {video_id} at {filepath}")
+        return jsonify({
+            "audio_url": f"/local_audio/{unique_filename}",
+            "title": "Existing Download",
+            "artist": "Unknown",
+            "album_art": ""
         })
 
-        return jsonify({"message": f"User {user_id} registered successfully."}), 201
-
-    except firebase_exceptions.FirebaseError as e:
-        print(f"Firebase registration error: {e}")
-        return jsonify({"error": "Registration failed."}), 400
-    except Exception as e:
-        print(f"Unexpected registration error: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "Internal server error."}), 500
-    
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    data = request.get_json()
-    id_token = data.get('id_token')
-
-    if not id_token:
-        return jsonify({"error": "ID token is required."}), 400
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'outtmpl': filepath,
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'force_ipv4': True,
+        'geo_bypass': True,
+        'age_limit': 99,
+    }
 
     try:
-        decoded_token = firebase_auth.verify_id_token(id_token)
-        user_id = decoded_token['uid']
-        # Set user_id in Flask session
-        session['user_id'] = user_id
-        session['logged_in'] = True
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+            logging.info(f"Audio downloaded for {video_id} to {filepath}")
 
-        # Update last_seen in Firestore for the user
-        user_ref = db.collection('users').document(user_id)
-        user_ref.update({'last_seen': firestore.SERVER_TIMESTAMP})
-
-        return jsonify({"message": "Logged in successfully.", "user_id": user_id}), 200
-
-    except firebase_exceptions.FirebaseError as e:
-        print(f"Firebase login error: {e}")
-        return jsonify({"error": "Login failed."}), 401
-    except Exception as e:
-        print(f"Unexpected login error: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "Internal server error."}), 500
-
-@app.route('/logout', methods=['POST'])
-@login_required
-def logout():
-    session.pop('user_id', None)
-    session.pop('logged_in', None)
-    return jsonify({"message": "Logged out successfully."}), 200
-
-@app.route('/me', methods=['GET'])
-@login_required
-def get_current_user_profile():
-    user_id = session.get('user_id')
-    try:
-        user_doc = db.collection('users').document(user_id).get()
-        if user_doc.exists:
-            user_data = user_doc.to_dict()
-            # Return the name for display
             return jsonify({
-                "user_id": user_id,
-                "name": user_data.get("name", user_data.get("email", "Unknown"))
-            }), 200
-        else:
-            session.pop('user_id', None) # Clear session if user not found
-            return jsonify({"error": "User profile not found. Please log in again."}), 404
-    except Exception as e:
-        print(f"Error fetching current user profile: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "Failed to fetch user profile."}), 500
-
-# --- Jam Management Routes ---
-@app.route('/jams', methods=['POST']) # <--- ROUTE CHANGED FROM /create_jam TO /jams
-@login_required
-def create_jam():
-    user_id = session.get('user_id')
-    data = request.get_json()
-    name = data.get('name')
-    is_private = data.get('is_private', False)
-    password = data.get('password') if is_private else None
-
-    if not name:
-        return jsonify({"error": "Jam name is required."}), 400
-
-    # Ensure password is provided for private jams
-    if is_private and not password:
-        return jsonify({"error": "Password is required for private jams."}), 400
-
-    try:
-        # Use UUID for a unique jam ID, then truncate for a shorter code
-        # jam_code = str(uuid.uuid4())[:8] # Example using uuid (ensure import uuid)
-        jam_code = generate_unique_jam_code() # Using helper function for 6-char code
-
-        password_hash = hash_password(password) if password else None
-
-        jam_data = {
-            'name': name,
-            'host_id': user_id,
-            'members': [user_id], # Host is automatically a member
-            'is_private': is_private,
-            'password_hash': password_hash,
-            'created_at': firestore.SERVER_TIMESTAMP,
-            'status': 'active', # You might have 'active', 'ended', etc.
-            'current_song': None, # No song playing initially
-            'current_song_state': 'stopped', # 'playing', 'paused', 'stopped'
-            'current_song_time': 0,
-            'queue': [],
-            'join_requests': [] # For private jams
-        }
-
-        # Save the jam in the correct collection path
-        db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_code).set(jam_data)
-
-        # Update user's active_jam_id
-        db.collection('users').document(user_id).update({'active_jam_id': jam_code})
-
-        print(f"Jam '{name}' created by {user_id} with code {jam_code}. Private: {is_private}")
-        return jsonify({"message": "Jam created successfully!", "jam_code": jam_code}), 201
-
-    except Exception as e:
-        print(f"Error creating jam: {e}")
-        traceback.print_exc()
-        return jsonify({"error": f"Failed to create jam: {e}"}), 500
-
-@app.route('/jams/<jam_id>', methods=['GET'])
-@login_required
-def get_jam_details(jam_id):
-    user_id = session.get('user_id')
-    try:
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id)
-        jam_doc = jam_ref.get()
-
-        if not jam_doc.exists:
-            return jsonify({"error": "Jam not found."}), 404
-
-        jam_data = jam_doc.to_dict()
-        if user_id not in jam_data.get('members', []):
-            return jsonify({"error": "Unauthorized to view this jam."}), 403
-
-        return jsonify(jam_data), 200
-
-    except Exception as e:
-        print(f"Error fetching jam details: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "Failed to fetch jam details."}), 500
-
-@app.route('/jams/user_jams', methods=['GET'])
-@login_required
-def get_user_jams():
-    user_id = session.get('user_id')
-    try:
-        # Get jams where the user is the host or a member
-        user_hosted_jams = db.collection('artifacts').document(APP_ID).collection('public_jams').where('host_id', '==', user_id).stream()
-        user_member_jams = db.collection('artifacts').document(APP_ID).collection('public_jams').where('members', 'array_contains', user_id).stream()
-
-        jams = {}
-        for jam_doc in user_hosted_jams:
-            jams[jam_doc.id] = jam_doc.to_dict()
-        for jam_doc in user_member_jams:
-            jams[jam_doc.id] = jam_doc.to_dict() # Will overwrite if already added from hosted jams
-
-        # Fetch host names for each jam
-        for jam_id, jam_data in jams.items():
-            host_id = jam_data.get('host_id')
-            if host_id:
-                host_doc = db.collection('users').document(host_id).get()
-                if host_doc.exists:
-                    host_data = host_doc.to_dict()
-                    jam_data['host_name'] = host_data.get('name', host_data.get('email', 'Unknown Host'))
-                else:
-                    jam_data['host_name'] = 'Unknown Host'
-            jams[jam_id] = jam_data # Update the dict with host name
-
-        return jsonify([{'jam_code': jam_id, **data} for jam_id, data in jams.items()]), 200
-
-    except Exception as e:
-        print(f"Error fetching user jams: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "Failed to fetch user jams."}), 500
-
-@app.route('/public_jams', methods=['GET'])
-@login_required
-def get_public_jams():
-    user_id = session.get('user_id')
-    try:
-        public_jams_query = db.collection('artifacts').document(APP_ID).collection('public_jams').where('is_private', '==', False).stream()
-        public_jams = []
-        for jam_doc in public_jams_query:
-            jam_data = jam_doc.to_dict()
-            if user_id not in jam_data.get('members', []): # Don't show jams user is already a member of
-                # Fetch host name
-                host_id = jam_data.get('host_id')
-                if host_id:
-                    host_doc = db.collection('users').document(host_id).get()
-                    if host_doc.exists:
-                        host_data = host_doc.to_dict()
-                        jam_data['host_name'] = host_data.get('name', host_data.get('email', 'Unknown Host'))
-                    else:
-                        jam_data['host_name'] = 'Unknown Host'
-                public_jams.append({'jam_code': jam_doc.id, **jam_data})
-
-        return jsonify(public_jams), 200
-
-    except Exception as e:
-        print(f"Error fetching public jams: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "Failed to fetch public jams."}), 500
-
-@app.route('/jams/join', methods=['POST'])
-@login_required
-def join_jam():
-    user_id = session.get('user_id')
-    data = request.get_json()
-    jam_id = data.get('jam_id')
-    password = data.get('password')
-
-    if not jam_id:
-        return jsonify({"error": "Jam ID is required."}), 400
-
-    try:
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id)
-        jam_doc = jam_ref.get()
-
-        if not jam_doc.exists:
-            return jsonify({"error": "Jam not found."}), 404
-
-        jam_data = jam_doc.to_dict()
-
-        if user_id in jam_data.get('members', []):
-            # User is already a member, just set active jam
-            db.collection('users').document(user_id).update({'active_jam_id': jam_id})
-            return jsonify({"message": "Already a member, active jam set.", "jam_code": jam_id}), 200
-
-        if jam_data.get('is_private'):
-            # Handle private jam
-            if password:
-                # Check password
-                if hash_password(password) == jam_data.get('password_hash'):
-                    # Password matches, add user to members
-                    jam_ref.update({'members': admin_firestore.ArrayUnion([user_id])})
-                    db.collection('users').document(user_id).update({'active_jam_id': jam_id})
-                    emit('jam_member_update', {'jam_id': jam_id, 'user_id': user_id, 'action': 'joined'}, room=jam_id)
-                    print(f"User {user_id} joined private jam {jam_id}")
-                    return jsonify({"message": "Successfully joined private jam.", "jam_code": jam_id}), 200
-                else:
-                    return jsonify({"error": "Incorrect password."}), 401
-            else:
-                # No password provided for private jam, send join request
-                if user_id not in jam_data.get('join_requests', []):
-                    jam_ref.update({'join_requests': admin_firestore.ArrayUnion([user_id])})
-                    host_id = jam_data.get('host_id')
-                    # Notify host about new request
-                    if host_id:
-                        emit('new_join_request', {'jam_id': jam_id, 'requester_id': user_id}, room=host_id) # Need to implement host-specific room/socket
-                    print(f"User {user_id} sent join request to private jam {jam_id}")
-                return jsonify({"message": "Join request sent. Waiting for host approval."}), 202
-        else:
-            # Public jam, add user to members
-            jam_ref.update({'members': admin_firestore.ArrayUnion([user_id])})
-            db.collection('users').document(user_id).update({'active_jam_id': jam_id})
-            emit('jam_member_update', {'jam_id': jam_id, 'user_id': user_id, 'action': 'joined'}, room=jam_id)
-            print(f"User {user_id} joined public jam {jam_id}")
-            return jsonify({"message": "Successfully joined public jam.", "jam_code": jam_id}), 200
-
-    except Exception as e:
-        print(f"Error joining jam: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "Failed to send join request or join jam. Please try again."}), 500
-
-@app.route('/jams/leave', methods=['POST'])
-@login_required
-def leave_jam():
-    user_id = session.get('user_id')
-    data = request.get_json()
-    jam_id = data.get('jam_id')
-
-    if not jam_id:
-        return jsonify({"error": "Jam ID is required."}), 400
-
-    try:
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id)
-        jam_doc = jam_ref.get()
-
-        if not jam_doc.exists:
-            return jsonify({"error": "Jam not found."}), 404
-
-        jam_data = jam_doc.to_dict()
-
-        if user_id in jam_data.get('members', []):
-            jam_ref.update({'members': admin_firestore.ArrayRemove([user_id])})
-            # Also clear active jam if it's the one being left
-            user_doc_ref = db.collection('users').document(user_id)
-            user_doc = user_doc_ref.get()
-            if user_doc.exists and user_doc.to_dict().get('active_jam_id') == jam_id:
-                user_doc_ref.update({'active_jam_id': firestore.DELETE_FIELD})
-            emit('jam_member_update', {'jam_id': jam_id, 'user_id': user_id, 'action': 'left'}, room=jam_id)
-            print(f"User {user_id} left jam {jam_id}")
-            return jsonify({"message": "Successfully left jam."}), 200
-        else:
-            return jsonify({"error": "Not a member of this jam."}), 400
-
-    except Exception as e:
-        print(f"Error leaving jam: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "Failed to leave jam."}), 500
-
-@app.route('/get_user_id')
-@login_required # Ensure only logged-in users can get their ID
-def get_user_id():
-    # user_id is guaranteed to be in session if @login_required passes
-    user_id = session.get('user_id')
-    if user_id:
-        return jsonify({'user_id': user_id}), 200
-    else:
-        # This case ideally shouldn't be hit if @login_required works
-        return jsonify({'error': 'User not logged in or ID not found'}), 401
-
-# ... (rest of your app.py code)
-
-@app.route('/jams/pending_requests', methods=['GET'])
-@login_required
-def get_pending_requests():
-    user_id = session.get('user_id')
-    try:
-        # Get jams where the current user is the host and there are join requests
-        hosted_jams_with_requests = db.collection('artifacts').document(APP_ID).collection('public_jams') \
-            .where('host_id', '==', user_id) \
-            .where('join_requests', '!=', []) \
-            .stream()
-
-        pending_requests_data = []
-        for jam_doc in hosted_jams_with_requests:
-            jam_data = jam_doc.to_dict()
-            jam_code = jam_doc.id
-            for requester_id in jam_data.get('join_requests', []):
-                requester_doc = db.collection('users').document(requester_id).get()
-                if requester_doc.exists:
-                    requester_data = requester_doc.to_dict()
-                    pending_requests_data.append({
-                        'jam_code': jam_code,
-                        'jam_name': jam_data.get('name'),
-                        'requester_id': requester_id,
-                        'requester_name': requester_data.get('name', requester_data.get('email', 'Unknown User'))
-                    })
-        return jsonify(pending_requests_data), 200
-    except Exception as e:
-        print(f"Error fetching pending requests: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "Failed to fetch pending requests."}), 500
-
-@app.route('/jams/approve_request', methods=['POST'])
-@login_required
-def approve_join_request():
-    user_id = session.get('user_id')
-    data = request.get_json()
-    jam_id = data.get('jam_id')
-    requester_id = data.get('requester_id')
-
-    if not all([jam_id, requester_id]):
-        return jsonify({"error": "Jam ID and Requester ID are required."}), 400
-
-    try:
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id)
-        jam_doc = jam_ref.get()
-
-        if not jam_doc.exists:
-            return jsonify({"error": "Jam not found."}), 404
-
-        jam_data = jam_doc.to_dict()
-
-        if jam_data.get('host_id') != user_id:
-            return jsonify({"error": "Only the host can approve join requests."}), 403
-
-        if requester_id in jam_data.get('join_requests', []):
-            # Remove from requests and add to members
-            jam_ref.update({
-                'join_requests': admin_firestore.ArrayRemove([requester_id]),
-                'members': admin_firestore.ArrayUnion([requester_id])
+                "audio_url": f"/local_audio/{unique_filename}",
+                "title": info.get('title', 'Unknown Title'),
+                "artist": info.get('uploader', 'Unknown Artist'),
+                "album_art": info.get('thumbnail', '')
             })
-            # Set requester's active_jam_id
-            db.collection('users').document(requester_id).update({'active_jam_id': jam_id})
-            emit('join_request_approved', {'jam_id': jam_id}, room=requester_id) # Notify requester
-            emit('jam_member_update', {'jam_id': jam_id, 'user_id': requester_id, 'action': 'joined'}, room=jam_id) # Notify jam members
-            print(f"Join request from {requester_id} for jam {jam_id} approved by host {user_id}")
-            return jsonify({"message": "Join request approved successfully."}), 200
+
+    except yt_dlp.utils.DownloadError as e:
+        logging.error(f"yt-dlp download error for video ID {video_id}: {e}")
+        if "unavailable" in str(e) or "private" in str(e) or "embedding is disabled" in str(e):
+            return jsonify({"error": "Video is restricted or unavailable for download."}), 403
+        elif "Age-restricted" in str(e):
+            return jsonify({"error": "Video is age-restricted and cannot be accessed."}), 403
         else:
-            return jsonify({"error": "Requester not found in pending requests."}), 400
-
+            return jsonify({"error": f"Download error: {e}"}), 500
     except Exception as e:
-        print(f"Error approving join request: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "Failed to approve join request."}), 500
+        logging.error(f"Unexpected error for video ID {video_id}: {e}")
+        return jsonify({"error": f"Internal server error: {e}"}), 500
 
-@app.route('/jams/deny_request', methods=['POST'])
-@login_required
-def deny_join_request():
-    user_id = session.get('user_id')
-    data = request.get_json()
-    jam_id = data.get('jam_id')
-    requester_id = data.get('requester_id')
+@app.route('/youtube_info')
+def youtube_info():
+    url = request.args.get('url')
+    if not url:
+        return jsonify({"error": "URL parameter is missing."}), 400
 
-    if not all([jam_id, requester_id]):
-        return jsonify({"error": "Jam ID and Requester ID are required."}), 400
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'force_ipv4': True,
+        'geo_bypass': True,
+        'age_limit': 99,
+        'logger': logging.getLogger(),
+    }
 
     try:
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id)
-        jam_doc = jam_ref.get()
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            video_id = info.get('id')
+            title = info.get('title')
+            uploader = info.get('uploader')
+            thumbnail = info.get('thumbnail')
+            duration = info.get('duration')
 
-        if not jam_doc.exists:
-            return jsonify({"error": "Jam not found."}), 404
+            if not video_id:
+                logging.error(f"Could not extract video ID for URL: {url}")
+                return jsonify({"error": "Could not extract video ID from the provided URL."}), 400
 
-        jam_data = jam_doc.to_dict()
+            return jsonify({
+                "video_id": video_id,
+                "title": title,
+                "uploader": uploader,
+                "thumbnail": thumbnail,
+                "duration": duration,
+                "type": "youtube"
+            })
 
-        if jam_data.get('host_id') != user_id:
-            return jsonify({"error": "Only the host can deny join requests."}), 403
-
-        if requester_id in jam_data.get('join_requests', []):
-            jam_ref.update({'join_requests': admin_firestore.ArrayRemove([requester_id])})
-            emit('join_request_denied', {'jam_id': jam_id}, room=requester_id) # Notify requester
-            print(f"Join request from {requester_id} for jam {jam_id} denied by host {user_id}")
-            return jsonify({"message": "Join request denied successfully."}), 200
-        else:
-            return jsonify({"error": "Requester not found in pending requests."}), 400
-
+    except yt_dlp.utils.DownloadError as e:
+        logging.error(f"yt-dlp info extraction error for URL {url}: {e}")
+        return jsonify({"error": f"Could not get YouTube video information: {e}"}), 500
     except Exception as e:
-        print(f"Error denying join request: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "Failed to deny join request."}), 500
+        logging.error(f"Unexpected error during YouTube info extraction for URL {url}: {e}")
+        return jsonify({"error": f"Internal server error: {e}"}), 500
 
 
-@app.route('/jams/user_active_jam', methods=['GET']) # <--- ROUTE CHANGED FROM /jams/user_active_jam/<uid>
-@login_required
-def get_active_jam():
-    user_id = session.get('user_id')
-    try:
-        user_doc = db.collection('users').document(user_id).get()
-        if not user_doc.exists:
-            return jsonify({"error": "User not found."}), 404
-
-        active_jam_id = user_doc.to_dict().get('active_jam_id')
-
-        if active_jam_id:
-            jam_doc = db.collection('artifacts').document(APP_ID).collection('public_jams').document(active_jam_id).get()
-            if jam_doc.exists:
-                jam_data = jam_doc.to_dict()
-                if user_id in jam_data.get('members', []): # Ensure user is still a member
-                    return jsonify({"active_jam_id": active_jam_id, "jam_name": jam_data.get('name')}), 200
-                else:
-                    # Clear active_jam_id if user is no longer a member
-                    db.collection('users').document(user_id).update({'active_jam_id': firestore.DELETE_FIELD})
-                    return jsonify({"active_jam_id": None, "message": "You are no longer a member of that jam."}), 200
-            else:
-                # Clear active_jam_id if jam no longer exists
-                db.collection('users').document(user_id).update({'active_jam_id': firestore.DELETE_FIELD})
-                return jsonify({"active_jam_id": None, "message": "Active jam not found or no longer exists."}), 200
-        else:
-            return jsonify({"active_jam_id": None, "message": "No active jam."}), 200
-    except Exception as e:
-        print(f"Error fetching active jam: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "Failed to fetch active jam."}), 500
-
-
-@app.route('/get_jam_state', methods=['GET'])
-@login_required
-def get_jam_state():
-    user_id = session.get('user_id')
-    jam_id = request.args.get('jam_id') # Get jam_id from query parameter
-
-    if not jam_id:
-        return jsonify({"error": "Jam ID is required."}), 400
-
-    try:
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id)
-        jam_doc = jam_ref.get()
-
-        if not jam_doc.exists:
-            return jsonify({"error": "Jam not found."}), 404
-
-        jam_data = jam_doc.to_dict()
-
-        if user_id not in jam_data.get('members', []):
-            return jsonify({"error": "Unauthorized to access this jam's state."}), 403
-
-        # Return only the relevant state for the frontend
-        return jsonify({
-            'current_song': jam_data.get('current_song'),
-            'current_song_state': jam_data.get('current_song_state'),
-            'current_song_time': jam_data.get('current_song_time'),
-            'queue': jam_data.get('queue', []),
-            'host_id': jam_data.get('host_id'),
-            'members': jam_data.get('members', [])
-        }), 200
-
-    except Exception as e:
-        print(f"Error fetching jam state for {jam_id}: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "Failed to fetch jam state."}), 500
-YOUTUBE_API_KEY = 'AIzaSyCkRrCzqelHrxOBUIv85am3LkRynyxETk8'
-
-@app.route('/search_youtube')
-def search_youtube():
-    query = request.args.get('q')
+@app.route('/Youtube')
+def Youtube():
+    query = request.args.get('query')
     if not query:
-        return jsonify({"error": "Missing search query"}), 400
+        return jsonify({"error": "Query parameter is missing."}), 400
+
+    ydl_opts = {
+        'default_search': 'ytsearch10',
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': True,
+        'force_ipv4': True,
+        'geo_bypass': True,
+        'logger': logging.getLogger(),
+    }
 
     try:
-        url = f'https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=5&q={query}&key={YOUTUBE_API_KEY}'
-        response = requests.get(url)
-        data = response.json()
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(query, download=False)
+            videos = []
+            if 'entries' in info:
+                for entry in info['entries']:
+                    if entry and entry.get('id') and entry.get('title'):
+                        videos.append({
+                            'id': entry['id'],
+                            'title': entry['title'],
+                            'uploader': entry.get('uploader', 'Unknown'),
+                            'thumbnail': entry.get('thumbnail', ''),
+                            'duration': entry.get('duration'),
+                        })
+            return jsonify(videos)
 
-        results = []
-        for item in data.get('items', []):
-            video = {
-                'videoId': item['id']['videoId'],
-                'title': item['snippet']['title'],
-                'channel': item['snippet']['channelTitle'],
-                'thumbnail': item['snippet']['thumbnails']['default']['url']
-            }
-            results.append(video)
-
-        return jsonify({"results": results})
-
+    except yt_dlp.utils.DownloadError as e:
+        logging.error(f"yt-dlp search error for query '{query}': {e}")
+        return jsonify({"error": f"Youtube failed: {e}"}), 500
     except Exception as e:
-        print(f"Search error: {e}")
-        return jsonify({"error": "Failed to fetch YouTube results"}), 500
+        logging.error(f"Unexpected error during Youtube for query '{query}': {e}")
+        return jsonify({"error": f"Internal server error: {e}"}), 500
 
-# --- HTML serving routes ---
-@app.route('/dashboard')
-@login_required
-def dashboard():
-    return render_template('dashboard.html')
 
-@app.route('/login_page')
-def login_page():
-    return render_template('login.html')
-
-@app.route('/register_page')
-def register_page():
-    return render_template('register.html')
-
-@app.route('/jam')
-@login_required
-def jam_page():
-    return render_template('jam.html')
-
-# --- SocketIO Events ---
+# --- SocketIO Event Handlers ---
 @socketio.on('connect')
-def connect():
-    user_id = session.get('user_id')
-    if user_id:
-        join_room(user_id) # Join a room specific to the user ID
-        print(f"User {user_id} connected via SocketIO.")
-        # Update user's last_seen
-        db.collection('users').document(user_id).update({'last_seen': firestore.SERVER_TIMESTAMP})
-        # If user is in an active jam, have them join the jam's room
-        user_doc = db.collection('users').document(user_id).get()
-        if user_doc.exists:
-            active_jam_id = user_doc.to_dict().get('active_jam_id')
-            if active_jam_id:
-                join_room(active_jam_id)
-                print(f"User {user_id} joined jam room {active_jam_id}")
-    else:
-        print("Unauthenticated user connected via SocketIO.")
-        emit('error', {'message': 'Unauthorized: Please log in.'})
-        return False # Disallow connection if not authenticated
+def handle_connect():
+    logging.info(f"Client connected: {request.sid}")
 
 @socketio.on('disconnect')
-def disconnect():
-    user_id = session.get('user_id')
-    if user_id:
-        print(f"User {user_id} disconnected.")
-        # Update last_seen or mark as offline
-        db.collection('users').document(user_id).update({'last_seen': firestore.SERVER_TIMESTAMP}) # Or a separate 'is_online' field
-    else:
-        print("Unauthenticated client disconnected.")
+def handle_disconnect():
+    logging.info(f"Client disconnected: {request.sid}")
+    if request.sid in sids_in_jams:
+        jam_id = sids_in_jams[request.sid]['jam_id']
+        nickname = sids_in_jams[request.sid]['nickname']
 
-@socketio.on('join_jam_room')
-@login_required
-def handle_join_jam_room(data):
-    user_id = session.get('user_id')
-    jam_id = data.get('jam_id')
-    if not jam_id:
-        emit('error', {'message': 'Jam ID is required to join room.'}, room=request.sid)
+        if db: # Only proceed if Firestore is initialized
+            jam_ref = db.collection('jam_sessions').document(jam_id)
+            try:
+                jam_doc = jam_ref.get()
+                if jam_doc.exists:
+                    jam_data = jam_doc.to_dict()
+                    if jam_data['host_sid'] == request.sid:
+                        # Host disconnected, mark session as ended in Firestore
+                        logging.info(f"Host {nickname} ({request.sid}) for jam {jam_id} disconnected. Marking session as ended.")
+                        jam_ref.update({'is_active': False, 'ended_at': firestore.SERVER_TIMESTAMP})
+                        socketio.emit('session_ended', {'jam_id': jam_id, 'message': 'Host disconnected. Session ended.'}, room=jam_id)
+                    else:
+                        # Participant disconnected, remove from participants list
+                        if request.sid in jam_data['participants']:
+                            updated_participants = {sid: name for sid, name in jam_data['participants'].items() if sid != request.sid}
+                            jam_ref.update({'participants': updated_participants})
+                            logging.info(f"Participant {nickname} ({request.sid}) left jam {jam_id}.")
+                            socketio.emit('update_participants', {
+                                'jam_id': jam_id,
+                                'participants': list(updated_participants.values())
+                            }, room=jam_id)
+                else:
+                    logging.warning(f"Disconnected client {request.sid} was in jam {jam_id}, but jam not found in Firestore.")
+            except Exception as e:
+                logging.error(f"Error handling disconnect for jam {jam_id} in Firestore: {e}")
+        
+        # Clean up local socketio tracking
+        if jam_id in jam_sessions and jam_sessions[jam_id]['host_sid'] == request.sid:
+             del jam_sessions[jam_id] # Remove local tracking for host-ended session
+        elif request.sid in jam_sessions.get(jam_id, {}).get('participants', {}):
+             jam_sessions[jam_id]['participants'].pop(request.sid, None)
+
+        if request.sid in sids_in_jams:
+            del sids_in_jams[request.sid]
+        
+        leave_room(jam_id) # Ensure socket leaves the room
+
+@socketio.on('create_session')
+def create_session(data):
+    if db is None:
+        emit('join_failed', {'message': 'Server database not initialized. Cannot create session.'})
         return
 
+    jam_name = data.get('jam_name', 'Unnamed Jam Session')
+    nickname = data.get('nickname', 'Host')
+    
     try:
-        jam_doc = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id).get()
-        if not jam_doc.exists or user_id not in jam_doc.to_dict().get('members', []):
-            emit('error', {'message': 'Unauthorized to join this jam room.'}, room=request.sid)
-            return
+        # Create a new document in 'jam_sessions' collection, Firestore generates ID
+        new_jam_doc = db.collection('jam_sessions').add({
+            'name': jam_name,
+            'host_sid': request.sid,
+            'participants': {request.sid: nickname}, # Store SID to nickname mapping
+            'playlist': [],
+            'playback_state': {
+                'current_track_index': 0,
+                'current_playback_time': 0,
+                'is_playing': False,
+                'timestamp': firestore.SERVER_TIMESTAMP # Use server timestamp
+            },
+            'created_at': firestore.SERVER_TIMESTAMP,
+            'is_active': True # Mark session as active
+        })
+        jam_id = new_jam_doc[1].id # Get the ID of the newly created document
+
+        jam_sessions[jam_id] = { # Update local cache for quick lookup
+            'name': jam_name,
+            'host_sid': request.sid,
+            'participants': {request.sid: nickname},
+            'playlist': [],
+            'playback_state': {
+                'current_track_index': 0,
+                'current_playback_time': 0,
+                'is_playing': False,
+                'timestamp': 0
+            }
+        }
+        sids_in_jams[request.sid] = {'jam_id': jam_id, 'nickname': nickname}
 
         join_room(jam_id)
-        print(f"User {user_id} joined SocketIO room for jam {jam_id}")
-        emit('room_joined', {'jam_id': jam_id, 'message': 'Successfully joined jam room.'}, room=request.sid)
+        logging.info(f"Jam session '{jam_name}' created with ID: {jam_id} by host {nickname} ({request.sid})")
 
-    except Exception as e:
-        print(f"Error joining jam room: {e}")
-        traceback.print_exc()
-        emit('error', {'message': 'Failed to join jam room.'}, room=request.sid)
+        # Construct the shareable link using the base URL
+        shareable_link = f"{get_base_url()}join/{jam_id}" # <--- MODIFIED LINE
 
-@socketio.on('leave_jam_room')
-@login_required
-def handle_leave_jam_room(data):
-    user_id = session.get('user_id')
-    jam_id = data.get('jam_id')
-    if not jam_id:
-        emit('error', {'message': 'Jam ID is required to leave room.'}, room=request.sid)
-        return
-
-    try:
-        leave_room(jam_id)
-        print(f"User {user_id} left SocketIO room for jam {jam_id}")
-        emit('room_left', {'jam_id': jam_id, 'message': 'Successfully left jam room.'}, room=request.sid)
-    except Exception as e:
-        print(f"Error leaving jam room: {e}")
-        traceback.print_exc()
-        emit('error', {'message': 'Failed to leave jam room.'}, room=request.sid)
-
-@socketio.on('add_song_to_queue')
-@login_required
-def add_song_to_queue(data):
-    user_id = session.get('user_id')
-    jam_id = data.get('jam_id')
-    song = data.get('song') # Expects {id, title, channel, thumbnail}
-
-    if not all([jam_id, song, song.get('id'), song.get('title')]):
-        emit('error', {'message': 'Invalid song data or jam ID.'}, room=request.sid)
-        return
-
-    try:
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id)
-        jam_doc = jam_ref.get()
-
-        if not jam_doc.exists or user_id not in jam_doc.to_dict().get('members', []):
-            emit('error', {'message': 'Unauthorized to add song to this jam.'}, room=request.sid)
-            return
-
-        # Add song to queue and update last_updated timestamp
-        jam_ref.update({
-            'queue': admin_firestore.ArrayUnion([song]),
-            'last_updated': firestore.SERVER_TIMESTAMP
+        emit('session_created', {
+            'jam_id': jam_id,
+            'jam_name': jam_name,
+            'is_host': True,
+            'initial_state': jam_sessions[jam_id]['playback_state'], # Send initial local state
+            'participants': list(jam_sessions[jam_id]['participants'].values()),
+            'shareable_link': shareable_link # <--- NEW FIELD
         })
-        emit('jam_queue_update', {'jam_id': jam_id, 'queue': jam_doc.to_dict().get('queue', []) + [song]}, room=jam_id)
-        print(f"Song '{song.get('title')}' added to queue for jam {jam_id} by {user_id}")
+
     except Exception as e:
-        print(f"Error adding song to queue for jam {jam_id}: {e}")
-        traceback.print_exc()
-        emit('error', {'message': f'Failed to add song to queue: {e}'}, room=request.sid)
+        logging.error(f"Error creating jam session in Firestore: {e}")
+        emit('join_failed', {'message': f'Error creating session: {e}'})
 
-@socketio.on('play_song')
-@login_required
-def play_song(data):
-    user_id = session.get('user_id')
-    jam_id = data.get('jam_id')
-    song_id = data.get('song_id') # YouTube video ID
 
-    if not all([jam_id, song_id]):
-        emit('error', {'message': 'Jam ID and song ID are required.'}, room=request.sid)
+@socketio.on('join_session')
+def join_session(data):
+    if db is None:
+        emit('join_failed', {'message': 'Server database not initialized. Cannot join session.'})
         return
 
-    try:
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id)
-        jam_doc = jam_ref.get()
-
-        if not jam_doc.exists:
-            emit('error', {'message': 'Jam not found.'}, room=request.sid)
-            return
-
-        jam_data = jam_doc.to_dict()
-
-        # Only host can play/control songs
-        if jam_data.get('host_id') != user_id:
-            emit('error', {'message': 'Only the host can control song playback.'}, room=request.sid)
-            return
-
-        # Find the song in the queue
-        song_to_play = next((s for s in jam_data.get('queue', []) if s.get('id') == song_id), None)
-
-        if song_to_play:
-            # Set current song and state
-            jam_ref.update({
-                'current_song': song_to_play,
-                'current_song_state': 'playing',
-                'current_song_time': 0, # Start from beginning
-                'last_updated': firestore.SERVER_TIMESTAMP
-            })
-            emit('jam_state_update', {
-                'current_song': song_to_play,
-                'current_song_state': 'playing',
-                'current_song_time': 0,
-                'updater_id': user_id # Let frontend know who initiated the update
-            }, room=jam_id, include_self=True)
-            print(f"Jam {jam_id}: Host {user_id} playing song: {song_to_play.get('title')}")
-        else:
-            emit('error', {'message': 'Song not found in queue.'}, room=request.sid)
-            return
-
-    except Exception as e:
-        print(f"Error playing song for jam {jam_id}: {e}")
-        traceback.print_exc()
-        emit('error', {'message': f'Failed to play song: {e}'}, room=request.sid)
-
-@socketio.on('pause_song')
-@login_required
-def pause_song(data):
-    user_id = session.get('user_id')
     jam_id = data.get('jam_id')
-    current_time = data.get('current_time', 0) # Current playback time from client
-
+    nickname = data.get('nickname', 'Guest')
+    
     if not jam_id:
-        emit('error', {'message': 'Jam ID is required.'}, room=request.sid)
+        logging.warning(f"Client {request.sid} attempted to join without jam_id.")
+        emit('join_failed', {'message': 'Jam ID is missing.'})
         return
 
     try:
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id)
-        jam_doc = jam_ref.get()
-
-        if not jam_doc.exists:
-            emit('error', {'message': 'Jam not found.'}, room=request.sid)
+        jam_doc = db.collection('jam_sessions').document(jam_id).get()
+        if not jam_doc.exists or not jam_doc.to_dict().get('is_active', False):
+            logging.warning(f"Client {request.sid} attempted to join non-existent or inactive jam {jam_id}")
+            emit('join_failed', {'message': 'Jam session not found or has ended.'})
             return
 
         jam_data = jam_doc.to_dict()
-        if jam_data.get('host_id') != user_id:
-            emit('error', {'message': 'Only the host can control song playback.'}, room=request.sid)
+        
+        # Check if already a participant
+        if request.sid in jam_data.get('participants', {}):
+            logging.info(f"Client {request.sid} already in jam {jam_id}")
+            # Instead of failing, acknowledge successful join for existing participant
+            playback_state = jam_data.get('playback_state', {})
+            emit('sync_playback_state', {
+                'jam_id': jam_id,
+                'current_track_index': playback_state.get('current_track_index', 0),
+                'current_playback_time': playback_state.get('current_playback_time', 0),
+                'is_playing': playback_state.get('is_playing', False),
+                'playlist': jam_data.get('playlist', []),
+                'jam_name': jam_data.get('name', 'Unnamed Jam'),
+                'last_synced_at': playback_state.get('timestamp', firestore.SERVER_TIMESTAMP),
+                'participants': list(jam_data.get('participants', {}).values()) # Use existing participants
+            })
             return
 
-        if jam_data.get('current_song'):
-            jam_ref.update({
-                'current_song_state': 'paused',
-                'current_song_time': current_time,
-                'last_updated': firestore.SERVER_TIMESTAMP
-            })
-            emit('jam_state_update', {
-                'current_song_state': 'paused',
-                'current_song_time': current_time,
-                'updater_id': user_id
-            }, room=jam_id, include_self=True)
-            print(f"Jam {jam_id}: Host {user_id} paused song at {current_time}s")
-        else:
-            emit('error', {'message': 'No song currently playing to pause.'}, room=request.sid)
+
+        # Add participant to Firestore
+        updated_participants = jam_data.get('participants', {})
+        updated_participants[request.sid] = nickname
+        db.collection('jam_sessions').document(jam_id).update({'participants': updated_participants})
+
+        # Update local tracking (optional, but good for quick SID-to-jam mapping)
+        # Ensure the jam_id exists in jam_sessions before updating participants
+        if jam_id not in jam_sessions:
+            jam_sessions[jam_id] = jam_data # Populate local cache if not already there
+        jam_sessions[jam_id]['participants'][request.sid] = nickname
+        sids_in_jams[request.sid] = {'jam_id': jam_id, 'nickname': nickname}
+
+        join_room(jam_id)
+        logging.info(f"Client {nickname} ({request.sid}) joined jam {jam_id}")
+
+        # Send current state to the newly joined participant (from Firestore data)
+        playback_state = jam_data.get('playback_state', {})
+        emit('sync_playback_state', {
+            'jam_id': jam_id,
+            'current_track_index': playback_state.get('current_track_index', 0),
+            'current_playback_time': playback_state.get('current_playback_time', 0),
+            'is_playing': playback_state.get('is_playing', False),
+            'playlist': jam_data.get('playlist', []),
+            'jam_name': jam_data.get('name', 'Unnamed Jam'),
+            'last_synced_at': playback_state.get('timestamp', firestore.SERVER_TIMESTAMP), # Use server timestamp
+            'participants': list(updated_participants.values())
+        })
+
+        # Notify all other participants in the room about the new participant
+        emit('update_participants', {
+            'jam_id': jam_id,
+            'participants': list(updated_participants.values())
+        }, room=jam_id, include_self=False)
 
     except Exception as e:
-        print(f"Error pausing song for jam {jam_id}: {e}")
-        traceback.print_exc()
-        emit('error', {'message': f'Failed to pause song: {e}'}, room=request.sid)
+        logging.error(f"Error joining jam session {jam_id} in Firestore: {e}")
+        emit('join_failed', {'message': f'Error joining session: {e}'})
 
-@socketio.on('resume_song')
-@login_required
-def resume_song(data):
-    user_id = session.get('user_id')
+@socketio.on('sync_playback_state')
+def sync_playback_state(data):
+    if db is None:
+        return # Database not initialized
+
     jam_id = data.get('jam_id')
-
     if not jam_id:
-        emit('error', {'message': 'Jam ID is required.'}, room=request.sid)
         return
 
     try:
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id)
-        jam_doc = jam_ref.get()
-
+        jam_doc = db.collection('jam_sessions').document(jam_id).get()
         if not jam_doc.exists:
-            emit('error', {'message': 'Jam not found.'}, room=request.sid)
+            logging.warning(f"Sync request for non-existent jam {jam_id}")
             return
-
+        
         jam_data = jam_doc.to_dict()
-        if jam_data.get('host_id') != user_id:
-            emit('error', {'message': 'Only the host can control song playback.'}, room=request.sid)
-            return
+        if jam_data.get('host_sid') != request.sid:
+            logging.warning(f"Non-host {request.sid} attempted to sync state for jam {jam_id}")
+            return # Only the host can sync state
 
-        if jam_data.get('current_song') and jam_data.get('current_song_state') == 'paused':
-            jam_ref.update({
-                'current_song_state': 'playing',
-                'last_updated': firestore.SERVER_TIMESTAMP
-            })
-            emit('jam_state_update', {
-                'current_song_state': 'playing',
-                'updater_id': user_id
-            }, room=jam_id, include_self=True)
-            print(f"Jam {jam_id}: Host {user_id} resumed song.")
-        else:
-            emit('error', {'message': 'No paused song to resume.'}, room=request.sid)
+        # Update Firestore with the new state
+        new_playback_state = {
+            'current_track_index': data.get('current_track_index'),
+            'current_playback_time': data.get('current_playback_time'),
+            'is_playing': data.get('is_playing'),
+            'timestamp': firestore.SERVER_TIMESTAMP # Always update with server timestamp
+        }
+        
+        # Use a transaction for consistent updates if multiple fields are being updated
+        # or if there's a risk of conflicts. For simple updates, direct update is fine.
+        db.collection('jam_sessions').document(jam_id).update({
+            'playback_state': new_playback_state,
+            'playlist': data.get('playlist', []) # Host sends full playlist
+        })
+
+        # Don't emit from here; client-side will listen to Firestore changes and update.
+        # This prevents a loop of SocketIO events when using Firestore as the source of truth.
 
     except Exception as e:
-        print(f"Error resuming song for jam {jam_id}: {e}")
-        traceback.print_exc()
-        emit('error', {'message': f'Failed to resume song: {e}'}, room=request.sid)
+        logging.error(f"Error syncing playback state for jam {jam_id} to Firestore: {e}")
 
-@socketio.on('seek_song')
-@login_required
-def seek_song(data):
-    user_id = session.get('user_id')
+@socketio.on('add_song_to_jam')
+def add_song_to_jam(data):
+    if db is None:
+        return
+
     jam_id = data.get('jam_id')
-    seek_time = data.get('seek_time', 0)
+    song = data.get('song')
 
-    if not jam_id:
-        emit('error', {'message': 'Jam ID is required.'}, room=request.sid)
+    if not jam_id or not song:
+        logging.warning(f"Invalid add_song_to_jam request from {request.sid} for jam {jam_id}")
         return
 
     try:
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id)
+        jam_ref = db.collection('jam_sessions').document(jam_id)
         jam_doc = jam_ref.get()
-
         if not jam_doc.exists:
-            emit('error', {'message': 'Jam not found.'}, room=request.sid)
+            logging.warning(f"Add song request for non-existent jam {jam_id}")
             return
 
         jam_data = jam_doc.to_dict()
-        if jam_data.get('host_id') != user_id:
-            emit('error', {'message': 'Only the host can control song playback.'}, room=request.sid)
+        if jam_data.get('host_sid') != request.sid:
+            logging.warning(f"Non-host {request.sid} attempted to add song to jam {jam_id}")
             return
 
-        if jam_data.get('current_song'):
-            jam_ref.update({
-                'current_song_time': seek_time,
-                'last_updated': firestore.SERVER_TIMESTAMP
-            })
-            emit('jam_state_update', {
-                'current_song_time': seek_time,
-                'updater_id': user_id
-            }, room=jam_id, include_self=True)
-            print(f"Jam {jam_id}: Host {user_id} seeked song to {seek_time}s")
-        else:
-            emit('error', {'message': 'No song playing to seek.'}, room=request.sid)
+        updated_playlist = jam_data.get('playlist', [])
+        updated_playlist.append(song)
+        
+        jam_ref.update({'playlist': updated_playlist})
+        logging.info(f"Song '{song.get('title', 'Unknown')}' added to jam {jam_id} by host {request.sid} via Firestore.")
+        # No emit here, Firestore listener on client will handle.
 
     except Exception as e:
-        print(f"Error seeking song for jam {jam_id}: {e}")
-        traceback.print_exc()
-        emit('error', {'message': f'Failed to seek song: {e}'}, room=request.sid)
+        logging.error(f"Error adding song to jam {jam_id} in Firestore: {e}")
 
-@socketio.on('next_song')
-@login_required
-def next_song(data):
-    user_id = session.get('user_id')
+@socketio.on('remove_song_from_jam')
+def remove_song_from_jam(data):
+    if db is None:
+        return
+
     jam_id = data.get('jam_id')
+    index = data.get('index')
 
-    if not jam_id:
-        emit('error', {'message': 'Jam ID is required.'}, room=request.sid)
+    if not jam_id or index is None:
+        logging.warning(f"Invalid remove_song_from_jam request from {request.sid} for jam {jam_id}")
         return
 
     try:
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id)
+        jam_ref = db.collection('jam_sessions').document(jam_id)
         jam_doc = jam_ref.get()
-
         if not jam_doc.exists:
-            emit('error', {'message': 'Jam not found.'}, room=request.sid)
+            logging.warning(f"Remove song request for non-existent jam {jam_id}")
             return
 
         jam_data = jam_doc.to_dict()
-        if jam_data.get('host_id') != user_id:
-            emit('error', {'message': 'Only the host can control song playback.'}, room=request.sid)
+        if jam_data.get('host_sid') != request.sid:
+            logging.warning(f"Non-host {request.sid} attempted to remove song from jam {jam_id}")
             return
 
-        queue = jam_data.get('queue', [])
-        if queue:
-            next_song_in_queue = queue.pop(0) # Remove first song
+        current_playlist = jam_data.get('playlist', [])
+        if 0 <= index < len(current_playlist):
+            removed_song = current_playlist.pop(index)
+            logging.info(f"Song '{removed_song.get('title', 'Unknown')}' removed from jam {jam_id} by host {request.sid} via Firestore.")
+
+            # Adjust current_track_index if the removed song affects it
+            current_track_index = jam_data['playback_state'].get('current_track_index', 0)
+            if current_track_index == index:
+                if not current_playlist:
+                    current_track_index = 0
+                elif index >= len(current_playlist):
+                    current_track_index = 0
+            elif current_track_index > index:
+                current_track_index -= 1
+            
+            # Update Firestore
             jam_ref.update({
-                'current_song': next_song_in_queue,
-                'current_song_state': 'playing',
-                'current_song_time': 0,
-                'queue': queue, # Update queue in Firestore
-                'last_updated': firestore.SERVER_TIMESTAMP
+                'playlist': current_playlist,
+                'playback_state.current_track_index': current_track_index,
+                'playback_state.current_playback_time': 0, # Reset time for new current track
+                'playback_state.is_playing': jam_data['playback_state'].get('is_playing', False) and len(current_playlist) > 0 # Keep playing if playlist not empty
             })
-            emit('jam_state_update', {
-                'current_song': next_song_in_queue,
-                'current_song_state': 'playing',
-                'current_song_time': 0,
-                'updater_id': user_id
-            }, room=jam_id, include_self=True)
-            emit('jam_queue_update', {'jam_id': jam_id, 'queue': queue}, room=jam_id)
-            print(f"Jam {jam_id}: Host {user_id} played next song: {next_song_in_queue.get('title')}")
-        else:
-            # If queue is empty, stop playback
-            jam_ref.update({
-                'current_song': None,
-                'current_song_state': 'stopped',
-                'current_song_time': 0,
-                'last_updated': firestore.SERVER_TIMESTAMP
-            })
-            emit('jam_state_update', {
-                'current_song': None,
-                'current_song_state': 'stopped',
-                'current_song_time': 0,
-                'updater_id': user_id
-            }, room=jam_id, include_self=True)
-            emit('jam_queue_update', {'jam_id': jam_id, 'queue': []}, room=jam_id)
-            print(f"Jam {jam_id}: Queue empty, stopping playback.")
+            # No emit here, Firestore listener on client will handle.
 
     except Exception as e:
-        print(f"Error playing next song for jam {jam_id}: {e}")
-        traceback.print_exc()
-        emit('error', {'message': f'Failed to play next song: {e}'}, room=request.sid)
-
-
-@socketio.on('remove_song_from_queue')
-@login_required
-def remove_song_from_queue(data):
-    user_id = session.get('user_id')
-    jam_id = data.get('jam_id')
-    song_id = data.get('song_id')
-
-    if not all([jam_id, song_id]):
-        emit('error', {'message': 'Jam ID and song ID are required.'}, room=request.sid)
-        return
-
-    try:
-        jam_ref = db.collection('artifacts').document(APP_ID).collection('public_jams').document(jam_id)
-        jam_doc = jam_ref.get()
-
-        if not jam_doc.exists:
-            emit('error', {'message': 'Jam not found.'}, room=request.sid)
-            return
-
-        jam_data = jam_doc.to_dict()
-        if jam_data.get('host_id') != user_id: # Only host can remove songs
-            emit('error', {'message': 'Only the host can remove songs from the queue.'}, room=request.sid)
-            return
-
-        queue = jam_data.get('queue', [])
-        updated_queue = [s for s in queue if s.get('id') != song_id]
-
-        if len(updated_queue) < len(queue): # If a song was actually removed
-            jam_ref.update({
-                'queue': updated_queue,
-                'last_updated': firestore.SERVER_TIMESTAMP
-            })
-            emit('jam_queue_update', {'jam_id': jam_id, 'queue': updated_queue}, room=jam_id)
-            print(f"Song {song_id} removed from queue for jam {jam_id} by {user_id}")
-        else:
-            emit('error', {'message': 'Song not found in queue.'}, room=request.sid)
-
-    except Exception as e:
-        print(f"Error removing song from queue for jam {jam_id}: {e}")
-        traceback.print_exc()
-        emit('error', {'message': f'Failed to remove song: {e}'}, room=request.sid)
+        logging.error(f"Error removing song from jam {jam_id} in Firestore: {e}")
 
 
 if __name__ == '__main__':
-    # Use 0.0.0.0 to make it accessible from other devices on the network
-    # Use app.run for development, socketio.run for production or when using websockets
-    # app.run(debug=True, host='0.0.0.0', port=5000)
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True) # allow_unsafe_werkzeug for latest Werkzeug version
+    if GOOGLE_DRIVE_API_KEY == 'AIzaSyBUFh77a5swJRUcGCb5-V3V3DfaHGkI8-0': # Changed from placeholder for clarity
+        logging.warning("Google Drive API Key is not configured in app.py. Google Drive features might not work.")
+    if db is None:
+        logging.error("Firestore database is not initialized. Jam Session feature will not work.")
+    
+    socketio.run(app, debug=True, port=5000)

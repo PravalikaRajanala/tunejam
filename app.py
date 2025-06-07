@@ -523,7 +523,6 @@ def handle_disconnect():
                             updated_participants = {sid: name for sid, name in jam_data['participants'].items() if sid != request.sid}
                             jam_ref.update({'participants': updated_participants})
                             logging.info(f"Participant {nickname} ({request.sid}) left jam {jam_id}.")
-                            # Emit update to other participants in the room
                             socketio.emit('update_participants', {
                                 'jam_id': jam_id,
                                 'participants': list(updated_participants.values())
@@ -534,14 +533,14 @@ def handle_disconnect():
                 logging.error(f"Error handling disconnect for jam {jam_id} in Firestore: {e}")
         
         # Clean up local socketio tracking
+        # Note: Local jam_sessions cache will eventually become stale.
+        # Firestore is the source of truth.
         if jam_id in jam_sessions and jam_sessions[jam_id]['host_sid'] == request.sid:
-             # Only remove local jam session if host disconnected, as other participants might still be in the room
-             del jam_sessions[jam_id]
-        elif request.sid in sids_in_jams:
-            # Clean up sids_in_jams for any disconnected client
-            jam_id_local = sids_in_jams[request.sid]['jam_id']
-            if jam_id_local in jam_sessions and request.sid in jam_sessions[jam_id_local].get('participants', {}):
-                jam_sessions[jam_id_local]['participants'].pop(request.sid, None)
+             del jam_sessions[jam_id] # Remove local tracking for host-ended session
+        elif request.sid in jam_sessions.get(jam_id, {}).get('participants', {}):
+             jam_sessions[jam_id]['participants'].pop(request.sid, None)
+
+        if request.sid in sids_in_jams:
             del sids_in_jams[request.sid]
         
         leave_room(jam_id) # Ensure socket leaves the room
@@ -610,7 +609,6 @@ def create_session(data):
     except Exception as e:
         logging.error(f"Error creating jam session in Firestore: {e}")
         emit('join_failed', {'message': f'Error creating session: {e}'})
-
 
 @socketio.on('join_session')
 def join_session(data):

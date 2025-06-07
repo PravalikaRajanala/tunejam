@@ -17,7 +17,8 @@ import random
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
 
-app = Flask(__name__)
+# Initialize Flask app, telling it to look for templates in the current directory (root)
+app = Flask(__name__, template_folder='.') # <--- CHANGE HERE
 CORS(app)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 

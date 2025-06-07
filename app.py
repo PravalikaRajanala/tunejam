@@ -30,9 +30,6 @@ GOOGLE_DRIVE_API_KEY = os.environ.get('GOOGLE_DRIVE_API_KEY', 'YOUR_GOOGLE_DRIVE
 # Define the directory for downloaded audio files
 # WARNING: On Vercel, this directory is ephemeral. Files downloaded here will not persist
 # between requests or deployments. For persistent storage, use cloud storage (e.g., GCS, S3).
-DOWNLOAD_DIR = 'downloaded_audio'
-
-
 # Initialize Google Drive API service
 DRIVE_SERVICE = build('drive', 'v3', developerKey=GOOGLE_DRIVE_API_KEY)
 

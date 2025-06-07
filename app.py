@@ -1,17 +1,16 @@
 import os
-import json # New import for loading JSON from environment variable
-import eventlet # New import for SocketIO async mode. Ensure 'eventlet' is in requirements.txt
-eventlet.monkey_patch() # Patch standard library for async I/O
+import json
+import eventlet
+eventlet.monkey_patch()
 import tempfile
-import requests # New import for making HTTP requests more robustly
+import requests # Used for robust HTTP requests, especially for streaming
 
-from flask import Flask, request, Response, abort, render_template, send_from_directory, jsonify
+from flask import Flask, request, Response, abort, render_template, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import yt_dlp
 import logging
 import uuid
-# from urllib import request as url_request # No longer needed if using requests for proxying
 import re
 from googleapiclient.discovery import build
 import random
@@ -29,9 +28,9 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 # In Vercel, set an environment variable named GOOGLE_DRIVE_API_KEY with your actual key.
 GOOGLE_DRIVE_API_KEY = os.environ.get('GOOGLE_DRIVE_API_KEY', 'YOUR_GOOGLE_DRIVE_API_KEY_HERE') # Fallback for local testing
 
-# Define the directory for downloaded audio files
-# WARNING: On Vercel, this directory is ephemeral. Files downloaded here will not persist
-# between requests or deployments. For persistent storage, use cloud storage (e.g., GCS, S3).
+# Define the directory for downloaded audio files (now primarily for temporary yt-dlp internal use if needed)
+# On Vercel, this directory is ephemeral and writable. Files downloaded here will not persist
+# between requests or deployments.
 DOWNLOAD_DIR = tempfile.mkdtemp() # Correctly uses a writable temporary directory
 logging.info(f"Using temporary directory for downloads: {DOWNLOAD_DIR}")
 
@@ -103,23 +102,7 @@ def join_by_link(jam_id):
     return render_template('index.html', initial_jam_id=jam_id)
 
 
-@app.route('/local_audio/<path:filename>')
-def serve_local_audio(filename):
-    """
-    Serves audio files from the temporary DOWNLOAD_DIR.
-    WARNING: Files in DOWNLOAD_DIR are ephemeral and will not persist across requests.
-    This route is mainly useful for immediately serving a downloaded file after it's created (e.g., YouTube),
-    but not for long-term storage or sharing across multiple function invocations.
-    """
-    try:
-        logging.info(f"Attempting to serve local audio: {filename} from {DOWNLOAD_DIR}")
-        return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=False)
-    except FileNotFoundError:
-        logging.error(f"File not found: {filename} in {DOWNLOAD_DIR}")
-        abort(404, description=f"File not found: {filename}")
-    except Exception as e:
-        logging.error(f"Error serving local audio {filename}: {e}")
-        abort(500, description=f"Internal server error: {e}")
+# The /local_audio route is removed as both Google Drive and YouTube audio are now streamed directly
 
 
 @app.route('/proxy_googledrive_audio/<file_id>')
@@ -291,76 +274,126 @@ def get_random_googledrive_songs(folder_id):
         return jsonify({"error": f"Failed to get random songs from Google Drive folder: {e}"}), 500
 
 
-@app.route('/download_youtube_audio/<video_id>', methods=['GET'])
-def download_youtube_audio(video_id):
+@app.route('/proxy_youtube_audio/<video_id>', methods=['GET'])
+def proxy_youtube_audio(video_id):
     """
-    Handles downloading YouTube audio to a temporary file and serving its ephemeral URL.
+    Proxies YouTube audio directly to the client by first extracting the direct stream URL
+    with yt-dlp and then streaming from that URL using requests.
+    This avoids saving the audio to temporary disk storage entirely.
     """
-    logging.info(f"Received request to download YouTube audio for video ID: {video_id}")
-
-    unique_filename = f"{video_id}-{uuid.uuid4().hex}.mp3"
-    filepath = os.path.join(DOWNLOAD_DIR, unique_filename)
-
-    # NOTE: On Vercel, this is ephemeral, so a fresh download might happen on each request
-    # unless persistent cloud storage is used.
-    if os.path.exists(filepath):
-        logging.info(f"Serving existing downloaded audio for {video_id} from ephemeral storage at {filepath}")
-        return jsonify({
-            "audio_url": f"/local_audio/{unique_filename}",
-            "title": "Existing Download",
-            "artist": "Unknown",
-            "album_art": ""
-        })
+    logging.info(f"Received request to proxy YouTube audio for video ID: {video_id}")
 
     ydl_opts = {
-        'format': 'bestaudio/best',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'outtmpl': filepath, # Save to temporary directory
+        'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio', # Prefer m4a for better browser compatibility
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
         'force_ipv4': True,
         'geo_bypass': True,
         'age_limit': 99,
-        'external_downloader_args': ['--fragment-retries', '10', '--socket-timeout', '30'] # Add robustness
+        'logger': logging.getLogger(),
+        'simulate': True, # Only extract info, don't download
+        'format_sort': ['res,ext:m4a', 'res,ext:webm'], # Sort by resolution, then prefer m4a/webm
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Setting download=True here will save the file to `outtmpl` (tempfile location)
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
-            logging.info(f"Audio downloaded for {video_id} to ephemeral storage at {filepath}")
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            
+            # Find the best audio stream URL
+            audio_url = None
+            audio_ext = None
+            content_length = None
+            
+            # Prioritize streams with known content length if available
+            for f in info.get('formats', []):
+                if f.get('ext') in ['m4a', 'webm', 'mp3', 'ogg', 'opus'] and f.get('url') and f.get('acodec') != 'none':
+                    if f.get('filesize') is not None: # Prefer formats where filesize is known
+                        audio_url = f['url']
+                        audio_ext = f['ext']
+                        content_length = f['filesize']
+                        break # Found a good format with filesize, use it
 
-            return jsonify({
-                "audio_url": f"/local_audio/{unique_filename}", # This will then be served by /local_audio route
-                "title": info.get('title', 'Unknown Title'),
-                "artist": info.get('uploader', 'Unknown Artist'),
-                "album_art": info.get('thumbnail', '')
-            })
+            if not audio_url:
+                # Fallback to any best audio if no filesize found initially or previous loop skipped
+                for f in info.get('formats', []):
+                    if f.get('ext') in ['m4a', 'webm', 'mp3', 'ogg', 'opus'] and f.get('url') and f.get('acodec') != 'none':
+                        audio_url = f['url']
+                        audio_ext = f['ext']
+                        content_length = f.get('filesize') # May still be None
+                        break # Use the first suitable one
+
+            if not audio_url:
+                logging.error(f"No suitable audio stream found for video ID: {video_id}")
+                return jsonify({"error": "No suitable audio format found for this YouTube video."}), 404
+
+            logging.info(f"Extracted YouTube audio URL: {audio_url} (Ext: {audio_ext}, Size: {content_length})")
+
+            # Now stream directly from the extracted URL
+            headers_for_youtube_request = {}
+            range_header = request.headers.get('Range')
+            if range_header:
+                headers_for_youtube_request['Range'] = range_header
+                logging.info(f"Proxying YouTube audio with Range header: {range_header}")
+
+            # Set a timeout for the external request to YouTube
+            youtube_stream_response = requests.get(
+                audio_url,
+                headers=headers_for_youtube_request,
+                stream=True,
+                allow_redirects=True,
+                timeout=(30, 90) # Connect timeout, Read timeout for large files
+            )
+            youtube_stream_response.raise_for_status() # Raise an HTTPError for bad responses
+
+            # Determine mimetype based on extracted extension or response header
+            mimetype = youtube_stream_response.headers.get('Content-Type') or f'audio/{audio_ext}' if audio_ext else 'application/octet-stream'
+            
+            # Get actual content length from YouTube's response if available, or use yt-dlp's estimate
+            actual_content_length = youtube_stream_response.headers.get('Content-Length') or content_length
+
+            flask_response = Response(youtube_stream_response.iter_content(chunk_size=8192), mimetype=mimetype)
+            flask_response.headers['Accept-Ranges'] = 'bytes'
+
+            if actual_content_length:
+                flask_response.headers['Content-Length'] = actual_content_length
+            if range_header and youtube_stream_response.status_code == 206:
+                flask_response.status_code = 206 # Partial Content
+                flask_response.headers['Content-Range'] = youtube_stream_response.headers.get('Content-Range')
+
+            logging.info(f"Successfully proxied YouTube audio for {video_id}. Status: {flask_response.status_code}")
+            return flask_response
 
     except yt_dlp.utils.DownloadError as e:
-        logging.error(f"yt-dlp download error for video ID {video_id}: {e}")
+        logging.error(f"yt-dlp info extraction/proxy setup error for video ID {video_id}: {e}")
         error_message = str(e).lower()
         if "unavailable" in error_message or "private" in error_message or "embedding is disabled" in error_message:
-            return jsonify({"error": "Video is restricted or unavailable for download."}), 403
+            return jsonify({"error": "YouTube video is restricted or unavailable."}), 403
         elif "age-restricted" in error_message:
-            return jsonify({"error": "Video is age-restricted and cannot be accessed."}), 403
+            return jsonify({"error": "YouTube video is age-restricted and cannot be accessed."}), 403
         elif "no appropriate format" in error_message:
-            return jsonify({"error": "No suitable audio format found for this video."}), 404
+            return jsonify({"error": "No suitable audio format found for this YouTube video."}), 404
         elif "read timeout" in error_message or "connection timed out" in error_message:
-            return jsonify({"error": "Download timed out. Video might be too large or connection too slow."}), 504
+            return jsonify({"error": "YouTube info extraction timed out. Video might be too large or network slow."}), 504
         else:
-            return jsonify({"error": f"Download error: {e}"}), 500
+            return jsonify({"error": f"YouTube download/proxy error: {e}"}), 500
+    except requests.exceptions.Timeout:
+        logging.error(f"Timeout when streaming YouTube audio for {video_id}. The external request took too long to respond.")
+        return jsonify({"error": "Failed to stream YouTube audio: External request timed out."}), 504
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code
+        logging.error(f"HTTPError when streaming YouTube audio for {video_id}: {e.response.text} (Status: {status_code})")
+        return jsonify({"error": f"Failed to stream YouTube audio (HTTP {status_code}): {e.response.text}"}), status_code
     except Exception as e:
-        logging.error(f"Unexpected error for video ID {video_id}: {e}")
-        return jsonify({"error": f"Internal server error: {e}"}), 500
+        logging.error(f"Unexpected error when proxying YouTube audio for {video_id}: {e}")
+        return jsonify({"error": f"Internal server error during YouTube proxy: {e}"}), 500
+
 
 @app.route('/youtube_info')
 def youtube_info():
+    """
+    Extracts basic YouTube video information without downloading.
+    """
     url = request.args.get('url')
     if not url:
         return jsonify({"error": "URL parameter is missing."}), 400
@@ -416,6 +449,9 @@ def youtube_info():
 
 @app.route('/Youtube')
 def Youtube():
+    """
+    Searches YouTube for videos based on a query.
+    """
     query = request.args.get('query')
     if not query:
         return jsonify({"error": "Query parameter is missing."}), 400

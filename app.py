@@ -3,6 +3,7 @@ import json # New import for loading JSON from environment variable
 import eventlet # New import for SocketIO async mode. Ensure 'eventlet' is in requirements.txt
 eventlet.monkey_patch() # Patch standard library for async I/O
 import tempfile
+import requests # New import for making HTTP requests more robustly
 
 from flask import Flask, request, Response, abort, render_template, send_from_directory, jsonify
 from flask_cors import CORS
@@ -10,7 +11,7 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 import yt_dlp
 import logging
 import uuid
-from urllib import request as url_request
+# from urllib import request as url_request # No longer needed if using requests for proxying
 import re
 from googleapiclient.discovery import build
 import random
@@ -31,8 +32,12 @@ GOOGLE_DRIVE_API_KEY = os.environ.get('GOOGLE_DRIVE_API_KEY', 'YOUR_GOOGLE_DRIVE
 # Define the directory for downloaded audio files
 # WARNING: On Vercel, this directory is ephemeral. Files downloaded here will not persist
 # between requests or deployments. For persistent storage, use cloud storage (e.g., GCS, S3).
-DOWNLOAD_DIR = tempfile.mkdtemp()
+DOWNLOAD_DIR = tempfile.mkdtemp() # Correctly uses a writable temporary directory
+logging.info(f"Using temporary directory for downloads: {DOWNLOAD_DIR}")
+
+
 # Initialize Google Drive API service
+# This initialization happens once when the serverless function cold starts
 DRIVE_SERVICE = build('drive', 'v3', developerKey=GOOGLE_DRIVE_API_KEY)
 
 # --- Firebase Admin SDK Initialization (for Firestore) ---
@@ -47,7 +52,7 @@ try:
         # Load credentials from environment variable
         cred_dict = json.loads(firebase_credentials_json)
         cred = credentials.Certificate(cred_dict)
-        if not firebase_admin._apps: # Initialize Firebase Admin SDK only once
+        if not firebase_admin._apps: # Initialize Firebase Admin SDK only once per process
             firebase_admin.initialize_app(cred)
         db = firestore.client()
         logging.info("Firebase Admin SDK initialized successfully from environment variable.")
@@ -57,7 +62,7 @@ try:
         # and 'firebase_admin_key.json' should be in your .gitignore
         FIREBASE_ADMIN_KEY_FILE_LOCAL = 'firebase_admin_key.json' # Adjust path for local testing
         if os.path.exists(FIREBASE_ADMIN_KEY_FILE_LOCAL):
-            if not firebase_admin._apps: # Initialize Firebase Admin SDK only once
+            if not firebase_admin._apps: # Initialize Firebase Admin SDK only once per process
                 cred = credentials.Certificate(FIREBASE_ADMIN_KEY_FILE_LOCAL)
                 firebase_admin.initialize_app(cred)
             db = firestore.client()
@@ -100,108 +105,98 @@ def join_by_link(jam_id):
 
 @app.route('/local_audio/<path:filename>')
 def serve_local_audio(filename):
+    """
+    Serves audio files from the temporary DOWNLOAD_DIR.
+    WARNING: Files in DOWNLOAD_DIR are ephemeral and will not persist across requests.
+    This route is mainly useful for immediately serving a downloaded file after it's created (e.g., YouTube),
+    but not for long-term storage or sharing across multiple function invocations.
+    """
     try:
+        logging.info(f"Attempting to serve local audio: {filename} from {DOWNLOAD_DIR}")
         return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=False)
     except FileNotFoundError:
+        logging.error(f"File not found: {filename} in {DOWNLOAD_DIR}")
         abort(404, description=f"File not found: {filename}")
+    except Exception as e:
+        logging.error(f"Error serving local audio {filename}: {e}")
+        abort(500, description=f"Internal server error: {e}")
+
 
 @app.route('/proxy_googledrive_audio/<file_id>')
 def proxy_googledrive_audio(file_id):
+    """
+    Proxies Google Drive audio files directly to the client with byte-range support.
+    Uses 'requests' library for more robust streaming and error handling.
+    Adds 'key' parameter directly to the Google Drive URL.
+    """
     logging.info(f"Received request to proxy Google Drive audio for file ID: {file_id}")
-    google_drive_url = f"https://docs.google.com/uc?export=download&id={file_id}&key={GOOGLE_DRIVE_API_KEY}"
+
+    # It's crucial that GOOGLE_DRIVE_API_KEY is correctly set in Vercel environment variables
+    if not GOOGLE_DRIVE_API_KEY or GOOGLE_DRIVE_API_KEY == 'YOUR_GOOGLE_DRIVE_API_KEY_HERE':
+        logging.error("Google Drive API Key is not configured on the server for proxy.")
+        return jsonify({"error": "Google Drive API Key is not configured on the server. Please set it as an environment variable."}), 500
+
+    google_drive_url = f"https://docs.google.com/uc?export=download&id={file_id}"
+    
+    headers_for_drive_request = {}
     range_header = request.headers.get('Range')
-    start_byte = 0
-    end_byte = None
-    total_length = None
 
     if range_header:
-        match = re.search(r'bytes=(\d+)-(\d*)', range_header)
-        if match:
-            start_byte = int(match.group(1))
-            if match.group(2):
-                end_byte = int(match.group(2))
-        logging.info(f"Parsed Range header: start_byte={start_byte}, end_byte={end_byte}")
+        headers_for_drive_request['Range'] = range_header
+        logging.info(f"Proxying with Range header: {range_header}")
 
     try:
-        req = url_request.Request(google_drive_url)
-        if range_header:
-            req.add_header('Range', range_header)
+        # Use requests.get with stream=True for efficient streaming
+        # allow_redirects=True to follow Google Drive redirects
+        # Add developer key directly to the URL parameters
+        params = {'key': GOOGLE_DRIVE_API_KEY}
 
-        logging.info(f"Attempting to fetch Google Drive audio from: {google_drive_url} with Range: {range_header}")
-        drive_response = url_request.urlopen(req)
+        # Set a timeout for the external request to prevent Vercel function timeouts
+        # Adjust timeout as needed, but avoid very long values that exceed Vercel's limits
+        response_from_drive = requests.get(
+            google_drive_url, 
+            headers=headers_for_drive_request, 
+            stream=True, 
+            params=params, 
+            allow_redirects=True, 
+            timeout= (30, 60) # (connect timeout, read timeout) in seconds
+        )
+        response_from_drive.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
 
-        content_type = drive_response.info().get_content_type()
-        content_length = drive_response.info().get('Content-Length')
-        content_range = drive_response.info().get('Content-Range')
+        content_type = response_from_drive.headers.get('Content-Type', 'application/octet-stream')
+        content_length = response_from_drive.headers.get('Content-Length')
+        content_range = response_from_drive.headers.get('Content-Range')
+
+        # Create a Flask response that streams content from Google Drive
+        flask_response = Response(response_from_drive.iter_content(chunk_size=8192), mimetype=content_type)
+        flask_response.headers['Accept-Ranges'] = 'bytes'
 
         if content_length:
-            total_length = int(content_length)
-            if content_range:
-                total_match = re.search(r'bytes \d+-\d+/(\d+)', content_range)
-                if total_match:
-                    total_length = int(total_match.group(1))
+            flask_response.headers['Content-Length'] = content_length
+        if content_range:
+            flask_response.headers['Content-Range'] = content_range
+            flask_response.status_code = 206 # Partial Content
 
-        if total_length is None:
-            try:
-                head_req = url_request.Request(google_drive_url, method='HEAD')
-                head_response = url_request.urlopen(head_req)
-                total_length_head = head_response.info().get('Content-Length')
-                if total_length_head:
-                    total_length = int(total_length_head)
-                    logging.info(f"Obtained total length from HEAD request: {total_length}")
-            except Exception as e:
-                logging.warning(f"Failed to get total length from HEAD request: {e}")
+        logging.info(f"Successfully proxied Google Drive audio for {file_id}. Status: {flask_response.status_code}")
+        return flask_response
 
-        def generate_audio_stream():
-            try:
-                chunk_size = 1024 * 64
-                while True:
-                    chunk = drive_response.read(chunk_size)
-                    if not chunk:
-                        break
-                    yield chunk
-                logging.info(f"Finished streaming Google Drive audio for {file_id}")
-            except Exception as e:
-                logging.error(f"Error streaming Google Drive audio: {e}")
-                pass
-
-        response = Response(generate_audio_stream(), mimetype=content_type or 'application/octet-stream')
-        response.headers['Accept-Ranges'] = 'bytes'
-
-        if range_header and total_length is not None:
-            if end_byte is None:
-                end_byte = total_length - 1
-            
-            actual_start = start_byte
-            actual_end = end_byte if end_byte is not None else total_length - 1
-            
-            if content_range:
-                range_match = re.search(r'bytes (\d+)-(\d+)/(\d+)', content_range)
-                if range_match:
-                    actual_start = int(range_match.group(1))
-                    actual_end = int(range_match.group(2))
-                    total_length = int(range_match.group(3))
-            
-            response.status_code = 206
-            response.headers['Content-Range'] = f"bytes {actual_start}-{actual_end}/{total_length}"
-            response.headers['Content-Length'] = actual_end - actual_start + 1
-            logging.info(f"Serving partial content: Content-Range: {response.headers['Content-Range']}, Content-Length: {response.headers['Content-Length']}")
-        elif total_length is not None:
-            response.status_code = 200
-            response.headers['Content-Length'] = total_length
-            logging.info(f"Serving full content: Content-Length: {total_length}")
-        else:
-            response.status_code = 200
-            logging.warning("Serving full content without Content-Length (unknown total size).")
-
-        return response
-
-    except url_request.URLError as e:
-        logging.error(f"URLError when proxying Google Drive audio for {file_id}: {e}")
-        return jsonify({"error": f"Failed to access Google Drive file: {e.reason}"}), 500
+    except requests.exceptions.Timeout:
+        logging.error(f"Timeout when fetching Google Drive audio for {file_id}. The Google Drive API took too long to respond.")
+        return jsonify({"error": "Failed to stream audio: Request to Google Drive timed out. Try a smaller file or faster connection."}), 504
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code
+        logging.error(f"HTTPError when proxying Google Drive audio for {file_id}: {e.response.text} (Status: {status_code})")
+        # Check for specific API key related errors
+        if status_code == 400 and "developerKey" in e.response.text and "invalid" in e.response.text:
+            return jsonify({"error": "Google Drive API Key is invalid or missing. Please check your Vercel environment variables."}), 400
+        return jsonify({"error": f"Failed to access Google Drive file (HTTP {status_code}): {e.response.text}"}), status_code
+    except requests.exceptions.RequestException as e:
+        logging.error(f"General request error when proxying Google Drive audio for {file_id}: {e}")
+        return jsonify({"error": f"Failed to stream audio due to network or request issue: {e}"}), 500
     except Exception as e:
         logging.error(f"Unexpected error when proxying Google Drive audio for {file_id}: {e}")
-        return jsonify({"error": f"Internal server error: {e}"}), 500
+        return jsonify({"error": f"Internal server error during proxy: {e}"}), 500
+
 
 @app.route('/search_googledrive_folder/<folder_id>')
 def search_googledrive_folder(folder_id):
@@ -298,19 +293,23 @@ def get_random_googledrive_songs(folder_id):
 
 @app.route('/download_youtube_audio/<video_id>', methods=['GET'])
 def download_youtube_audio(video_id):
+    """
+    Handles downloading YouTube audio to a temporary file and serving its ephemeral URL.
+    """
     logging.info(f"Received request to download YouTube audio for video ID: {video_id}")
 
     unique_filename = f"{video_id}-{uuid.uuid4().hex}.mp3"
     filepath = os.path.join(DOWNLOAD_DIR, unique_filename)
 
-    # Check if file already exists in local temp storage
+    # NOTE: On Vercel, this is ephemeral, so a fresh download might happen on each request
+    # unless persistent cloud storage is used.
     if os.path.exists(filepath):
-        logging.info(f"Serving existing downloaded audio for {video_id} at {filepath}")
+        logging.info(f"Serving existing downloaded audio for {video_id} from ephemeral storage at {filepath}")
         return jsonify({
             "audio_url": f"/local_audio/{unique_filename}",
             "title": "Existing Download",
             "artist": "Unknown",
-            "album_art": "" # This might need to be fetched if not stored
+            "album_art": ""
         })
 
     ydl_opts = {
@@ -320,22 +319,24 @@ def download_youtube_audio(video_id):
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }],
-        'outtmpl': filepath,
+        'outtmpl': filepath, # Save to temporary directory
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
         'force_ipv4': True,
         'geo_bypass': True,
         'age_limit': 99,
+        'external_downloader_args': ['--fragment-retries', '10', '--socket-timeout', '30'] # Add robustness
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Setting download=True here will save the file to `outtmpl` (tempfile location)
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
-            logging.info(f"Audio downloaded for {video_id} to {filepath}")
+            logging.info(f"Audio downloaded for {video_id} to ephemeral storage at {filepath}")
 
             return jsonify({
-                "audio_url": f"/local_audio/{unique_filename}",
+                "audio_url": f"/local_audio/{unique_filename}", # This will then be served by /local_audio route
                 "title": info.get('title', 'Unknown Title'),
                 "artist": info.get('uploader', 'Unknown Artist'),
                 "album_art": info.get('thumbnail', '')
@@ -343,10 +344,15 @@ def download_youtube_audio(video_id):
 
     except yt_dlp.utils.DownloadError as e:
         logging.error(f"yt-dlp download error for video ID {video_id}: {e}")
-        if "unavailable" in str(e) or "private" in str(e) or "embedding is disabled" in str(e):
+        error_message = str(e).lower()
+        if "unavailable" in error_message or "private" in error_message or "embedding is disabled" in error_message:
             return jsonify({"error": "Video is restricted or unavailable for download."}), 403
-        elif "Age-restricted" in str(e):
+        elif "age-restricted" in error_message:
             return jsonify({"error": "Video is age-restricted and cannot be accessed."}), 403
+        elif "no appropriate format" in error_message:
+            return jsonify({"error": "No suitable audio format found for this video."}), 404
+        elif "read timeout" in error_message or "connection timed out" in error_message:
+            return jsonify({"error": "Download timed out. Video might be too large or connection too slow."}), 504
         else:
             return jsonify({"error": f"Download error: {e}"}), 500
     except Exception as e:
@@ -368,6 +374,7 @@ def youtube_info():
         'geo_bypass': True,
         'age_limit': 99,
         'logger': logging.getLogger(),
+        'external_downloader_args': ['--socket-timeout', '15'] # Add timeout for info extraction
     }
 
     try:
@@ -394,6 +401,13 @@ def youtube_info():
 
     except yt_dlp.utils.DownloadError as e:
         logging.error(f"yt-dlp info extraction error for URL {url}: {e}")
+        error_message = str(e).lower()
+        if "unavailable" in error_message or "private" in error_message or "embedding is disabled" in error_message:
+            return jsonify({"error": "Video info restricted or unavailable."}), 403
+        elif "age-restricted" in error_message:
+            return jsonify({"error": "Video info is age-restricted."}), 403
+        elif "read timeout" in error_message or "connection timed out" in error_message:
+            return jsonify({"error": "Info extraction timed out. Check URL or network."}), 504
         return jsonify({"error": f"Could not get YouTube video information: {e}"}), 500
     except Exception as e:
         logging.error(f"Unexpected error during YouTube info extraction for URL {url}: {e}")
@@ -414,6 +428,7 @@ def Youtube():
         'force_ipv4': True,
         'geo_bypass': True,
         'logger': logging.getLogger(),
+        'external_downloader_args': ['--socket-timeout', '15'] # Add timeout for search
     }
 
     try:
@@ -434,9 +449,12 @@ def Youtube():
 
     except yt_dlp.utils.DownloadError as e:
         logging.error(f"yt-dlp search error for query '{query}': {e}")
-        return jsonify({"error": f"Youtube failed: {e}"}), 500
+        error_message = str(e).lower()
+        if "read timeout" in error_message or "connection timed out" in error_message:
+            return jsonify({"error": "Search timed out. Try a more specific query."}), 504
+        return jsonify({"error": f"Youtube search failed: {e}"}), 500
     except Exception as e:
-        logging.error(f"Unexpected error during Youtube for query '{query}': {e}")
+        logging.error(f"Unexpected error during Youtube search for query '{query}': {e}")
         return jsonify({"error": f"Internal server error: {e}"}), 500
 
 
@@ -469,6 +487,7 @@ def handle_disconnect():
                             updated_participants = {sid: name for sid, name in jam_data['participants'].items() if sid != request.sid}
                             jam_ref.update({'participants': updated_participants})
                             logging.info(f"Participant {nickname} ({request.sid}) left jam {jam_id}.")
+                            # Emit update to other participants in the room
                             socketio.emit('update_participants', {
                                 'jam_id': jam_id,
                                 'participants': list(updated_participants.values())
@@ -479,14 +498,14 @@ def handle_disconnect():
                 logging.error(f"Error handling disconnect for jam {jam_id} in Firestore: {e}")
         
         # Clean up local socketio tracking
-        # Note: Local jam_sessions cache will eventually become stale.
-        # Firestore is the source of truth.
         if jam_id in jam_sessions and jam_sessions[jam_id]['host_sid'] == request.sid:
-             del jam_sessions[jam_id] # Remove local tracking for host-ended session
-        elif request.sid in jam_sessions.get(jam_id, {}).get('participants', {}):
-             jam_sessions[jam_id]['participants'].pop(request.sid, None)
-
-        if request.sid in sids_in_jams:
+             # Only remove local jam session if host disconnected, as other participants might still be in the room
+             del jam_sessions[jam_id]
+        elif request.sid in sids_in_jams:
+            # Clean up sids_in_jams for any disconnected client
+            jam_id_local = sids_in_jams[request.sid]['jam_id']
+            if jam_id_local in jam_sessions and request.sid in jam_sessions[jam_id_local].get('participants', {}):
+                jam_sessions[jam_id_local]['participants'].pop(request.sid, None)
             del sids_in_jams[request.sid]
         
         leave_room(jam_id) # Ensure socket leaves the room

@@ -20,16 +20,25 @@ import datetime # For session cookie expiration
 
 # Initialize Flask app, telling it to look for templates in the current directory (root)
 app = Flask(__name__, template_folder='.')
+CORS(app, supports_credentials=True) # Enable CORS and support credentials (for cookies)
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY') # Retrieve from environment variable
 
-# Enable CORS and support credentials (for cookies)
-CORS(app, supports_credentials=True)
-
-# Generate a secure random secret key if environment variable is missing
-app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32)) 
+# IMPORTANT: Ensure FLASK_SECRET_KEY is set as an environment variable in your Vercel deployment.
+# This key is crucial for Flask's session management, which Socket.IO might implicitly rely on
+# for secure communication and internal operations. If not set, Flask sessions will not be secure.
+if not app.config['SECRET_KEY']:
+    logging.warning("FLASK_SECRET_KEY environment variable is not set. Flask sessions will not be secure, "
+                    "and Socket.IO may encounter issues. Please set this in your Vercel project settings or local environment.")
+    # For local development or quick testing, a fallback can be used, but NOT for production:
+    # app.config['SECRET_KEY'] = 'a_very_insecure_default_key_for_testing_only'
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-socketio = SocketIO(app, cors_allowed_origins="*", manage_session=False) # manage_session=False is important for Flask-Login/Firebase session integration
+# Explicitly pass the Flask app to SocketIO and set async_mode
+# Using 'eventlet' as async_mode, as it's monkey-patched. This helps ensure proper async behavior.
+socketio = SocketIO(app, cors_allowed_origins="*", manage_session=False, async_mode='eventlet')
+
+logging.info("Flask app and SocketIO initialized.")
 
 # Define the directory for downloaded audio files (for YouTube downloads via Flask)
 # On Vercel, this directory is ephemeral and writable. Files downloaded here will not persist
@@ -65,7 +74,8 @@ try:
             logging.info("Firebase Admin SDK initialized successfully from local file (for development).")
         else:
             logging.error("Firebase Admin SDK credentials not found. Set 'FIREBASE_ADMIN_CREDENTIALS_JSON' "
-                          "environment variable on Vercel or provide 'firebase_admin_key.json' for local development.")
+                          "environment variable on Vercel or provide 'firebase_admin_key.json' for local development. "
+                          "Jam Session and Authentication features will not work.")
             db = None # Ensure db is None if initialization fails
             firebase_auth = None
 except Exception as e:
@@ -118,20 +128,27 @@ def login_required(f):
     def decorated_function(*args, **kwargs):
         session_cookie = request.cookies.get('session')
         if not session_cookie:
+            logging.info("Login required: No session cookie found. Redirecting to login.")
             return redirect(url_for('login_page'))
         try:
+            if not firebase_auth:
+                logging.error("Firebase Admin SDK Auth not initialized. Cannot verify session cookie for login_required.")
+                response = make_response(redirect(url_for('login_page')))
+                response.set_cookie('session', '', expires=0) # Clear potentially bad cookie
+                return response
+
             # Verify the session cookie. This will also check if the cookie is revoked.
             # Check the Firebase documentation for latest recommended duration.
-            # session_cookie_duration = datetime.timedelta(days=5) # Example: 5 days
             decoded_claims = firebase_auth.verify_session_cookie(session_cookie, check_revoked=True)
             request.user = decoded_claims # Attach user info to request object
+            logging.info(f"User {request.user['uid']} authenticated via session cookie for route access.")
         except auth.InvalidSessionCookieError:
-            logging.warning("Invalid or revoked session cookie.")
+            logging.warning("Invalid or revoked session cookie. Redirecting to login.")
             response = make_response(redirect(url_for('login_page')))
             response.set_cookie('session', '', expires=0) # Clear invalid cookie
             return response
         except Exception as e:
-            logging.error(f"Error verifying session cookie: {e}")
+            logging.error(f"Error verifying session cookie in login_required decorator: {e}")
             return redirect(url_for('login_page'))
         return f(*args, **kwargs)
     return decorated_function
@@ -152,7 +169,7 @@ def register_page():
 @app.route('/login', methods=['POST'])
 def login():
     if not firebase_auth:
-        logging.error("Firebase Admin SDK Auth not initialized.")
+        logging.error("Firebase Admin SDK Auth not initialized for login route.")
         return jsonify({"error": "Server authentication not ready."}), 500
 
     id_token = request.json.get('id_token')
@@ -167,11 +184,13 @@ def login():
 
         # Create a response and set the session cookie
         response = make_response(jsonify({"message": "Login successful!"}))
+        # httponly=True, secure=True (for HTTPS), samesite='Lax' (good balance for CSRF protection)
         response.set_cookie('session', session_cookie, httponly=True, secure=True, samesite='Lax', expires=datetime.datetime.now() + expires_in)
+        logging.info(f"User logged in, session cookie set for UID: {firebase_auth.verify_id_token(id_token)['uid']}.")
         return response
 
     except auth.InvalidIdTokenError:
-        logging.warning("Invalid ID token during login.")
+        logging.warning("Invalid ID token during login attempt.")
         return jsonify({"error": "Invalid ID token."}), 401
     except Exception as e:
         logging.error(f"Error during login process: {e}")
@@ -181,7 +200,7 @@ def login():
 @app.route('/register', methods=['POST'])
 def register():
     if not firebase_auth or not db:
-        logging.error("Firebase Admin SDK or Firestore not initialized.")
+        logging.error("Firebase Admin SDK or Firestore not initialized for register route.")
         return jsonify({"error": "Server components not ready for registration."}), 500
 
     id_token = request.json.get('id_token')
@@ -191,7 +210,7 @@ def register():
     experience_level = request.json.get('experience_level')
 
     if not id_token or not username:
-        return jsonify({"error": "Missing required registration data."}), 400
+        return jsonify({"error": "Missing required registration data (id_token or username)."})), 400
 
     try:
         # Verify the ID token to get the UID
@@ -215,10 +234,11 @@ def register():
 
         response = make_response(jsonify({"message": "Registration successful!"}))
         response.set_cookie('session', session_cookie, httponly=True, secure=True, samesite='Lax', expires=datetime.datetime.now() + expires_in)
+        logging.info(f"User {uid} registered and session cookie set.")
         return response
 
     except auth.InvalidIdTokenError:
-        logging.warning("Invalid ID token during registration.")
+        logging.warning("Invalid ID token during registration attempt.")
         return jsonify({"error": "Invalid ID token."}), 401
     except Exception as e:
         logging.error(f"Error during registration process: {e}")
@@ -228,7 +248,7 @@ def register():
 @app.route('/logout', methods=['POST'])
 def logout():
     if not firebase_auth:
-        logging.error("Firebase Admin SDK Auth not initialized.")
+        logging.error("Firebase Admin SDK Auth not initialized for logout route.")
         return jsonify({"error": "Server authentication not ready."}), 500
 
     session_cookie = request.cookies.get('session')
@@ -243,6 +263,7 @@ def logout():
     
     response = make_response(jsonify({"message": "Logged out successfully!"}))
     response.set_cookie('session', '', expires=0, httponly=True, secure=True, samesite='Lax') # Clear the cookie
+    logging.info("User logged out, session cookie cleared.")
     return response
 
 # Main application page, now protected
@@ -257,15 +278,14 @@ def dashboard():
             # Create a custom token for the client-side Firebase SDK based on the authenticated user's UID
             # This token is temporary and passed to the frontend for client-side authentication.
             initial_auth_token = firebase_auth.create_custom_token(request.user['uid']).decode('utf-8')
-            logging.info(f"Generated custom token for user: {request.user['uid']}")
+            logging.info(f"Generated custom token for dashboard user: {request.user['uid']}")
         except Exception as e:
             logging.error(f"Error generating custom token for dashboard: {e}")
             initial_auth_token = None # Fallback to anonymous if token generation fails
     else:
         initial_auth_token = None # Firebase Admin SDK not initialized
 
-    # Pass the initial_auth_token and current user ID to the frontend
-    # The frontend's Firebase SDK will then use this to sign in.
+    # Pass the initial_auth_token and current app ID to the frontend
     return render_template('index.html', 
                            __initial_auth_token=json.dumps(initial_auth_token) if initial_auth_token else 'null',
                            __app_id=os.environ.get('VERCEL_GIT_COMMIT_SHA', 'default-app-id')) # Vercel provides a unique ID
@@ -287,6 +307,7 @@ def join_by_link(jam_id):
     if firebase_auth:
         try:
             initial_auth_token = firebase_auth.create_custom_token(request.user['uid']).decode('utf-8')
+            logging.info(f"Generated custom token for join link user: {request.user['uid']}")
         except Exception as e:
             logging.error(f"Error generating custom token for join link: {e}")
             initial_auth_token = None
@@ -329,6 +350,7 @@ def proxy_youtube_audio(video_id):
             audio_ext = None
             content_length = None
             
+            # Prioritize finding a format with a filesize for better content-length header accuracy
             for f in info.get('formats', []):
                 if f.get('ext') in ['m4a', 'webm', 'mp3', 'ogg', 'opus'] and f.get('url') and f.get('acodec') != 'none':
                     if f.get('filesize') is not None:
@@ -336,12 +358,13 @@ def proxy_youtube_audio(video_id):
                         audio_ext = f['ext']
                         content_length = f['filesize']
                         break
+            # Fallback if no filesize found, just get the first suitable audio format
             if not audio_url:
                 for f in info.get('formats', []):
                     if f.get('ext') in ['m4a', 'webm', 'mp3', 'ogg', 'opus'] and f.get('url') and f.get('acodec') != 'none':
                         audio_url = f['url']
                         audio_ext = f['ext']
-                        content_length = f.get('filesize')
+                        content_length = f.get('filesize') # May be None
                         break
 
             if not audio_url:
@@ -356,14 +379,15 @@ def proxy_youtube_audio(video_id):
                 headers_for_youtube_request['Range'] = range_header
                 logging.info(f"Proxying YouTube audio with Range header: {range_header}")
 
+            # Stream the response from YouTube
             youtube_stream_response = requests.get(
                 audio_url,
                 headers=headers_for_youtube_request,
-                stream=True,
+                stream=True, # Important for streaming large files
                 allow_redirects=True,
-                timeout=(30, 90)
+                timeout=(30, 90) # Connection timeout, Read timeout
             )
-            youtube_stream_response.raise_for_status()
+            youtube_stream_response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
 
             mimetype = youtube_stream_response.headers.get('Content-Type') or f'audio/{audio_ext}' if audio_ext else 'application/octet-stream'
             actual_content_length = youtube_stream_response.headers.get('Content-Length') or content_length
@@ -373,6 +397,7 @@ def proxy_youtube_audio(video_id):
 
             if actual_content_length:
                 flask_response.headers['Content-Length'] = actual_content_length
+            # If the client sent a Range header and YouTube responded with 206 Partial Content
             if range_header and youtube_stream_response.status_code == 206:
                 flask_response.status_code = 206
                 flask_response.headers['Content-Range'] = youtube_stream_response.headers.get('Content-Range')
@@ -523,14 +548,14 @@ def Youtube():
         return jsonify({"error": "Query parameter is missing."}), 400
 
     ydl_opts = {
-        'default_search': 'ytsearch10',
+        'default_search': 'ytsearch10', # Search for up to 10 results
         'quiet': True,
         'no_warnings': True,
-        'extract_flat': True,
+        'extract_flat': True, # Only extract metadata, don't recursively extract playlist items
         'force_ipv4': True,
         'geo_bypass': True,
         'logger': logging.getLogger(),
-        'external_downloader_args': ['--socket-timeout', '15']
+        'external_downloader_args': ['--socket-timeout', '15'] # Timeout for external downloader if used
     }
 
     try:
@@ -582,11 +607,11 @@ def search_hosted_mp3s():
 # --- SocketIO Event Handlers ---
 @socketio.on('connect')
 def handle_connect():
-    logging.info(f"Client connected: {request.sid}")
+    logging.info(f"Socket.IO Client connected: {request.sid}")
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    logging.info(f"Client disconnected: {request.sid}")
+    logging.info(f"Socket.IO Client disconnected: {request.sid}")
     if request.sid in sids_in_jams:
         jam_id = sids_in_jams[request.sid]['jam_id']
         nickname = sids_in_jams[request.sid]['nickname']
@@ -597,21 +622,21 @@ def handle_disconnect():
                 jam_doc = jam_ref.get()
                 if jam_doc.exists:
                     jam_data = jam_doc.to_dict()
-                    if jam_data['host_sid'] == request.sid:
+                    if jam_data.get('host_sid') == request.sid: # Use .get() for safety
                         # Host disconnected, mark session as ended in Firestore
                         logging.info(f"Host {nickname} ({request.sid}) for jam {jam_id} disconnected. Marking session as ended.")
                         jam_ref.update({'is_active': False, 'ended_at': firestore.SERVER_TIMESTAMP})
                         socketio.emit('session_ended', {'jam_id': jam_id, 'message': 'Host disconnected. Session ended.'}, room=jam_id)
                     else:
                         # Participant disconnected, remove from participants list
-                        if request.sid in jam_data['participants']:
+                        if request.sid in jam_data.get('participants', {}): # Use .get() for safety
                             updated_participants = {sid: name for sid, name in jam_data['participants'].items() if sid != request.sid}
                             jam_ref.update({'participants': updated_participants})
                             logging.info(f"Participant {nickname} ({request.sid}) left jam {jam_id}.")
-                            # Only send updated participants list (nicknames)
+                            # Send the entire participants map (nicknames)
                             socketio.emit('update_participants', {
                                 'jam_id': jam_id,
-                                'participants': list(updated_participants.values())
+                                'participants': updated_participants # Send the map directly
                             }, room=jam_id)
                 else:
                     logging.warning(f"Disconnected client {request.sid} was in jam {jam_id}, but jam not found in Firestore.")
@@ -714,7 +739,7 @@ def join_session_handler(data): # Renamed to avoid conflict with Flask route
 
     try:
         jam_doc = db.collection('jam_sessions').document(jam_id).get()
-        if not jam_doc.exists or not jam_doc.to_dict().get('is_active', False):
+        if not jam_doc.exists or not jam_doc.to_dict().get('is_active', False): # Check for 'is_active'
             logging.warning(f"Client {request.sid} attempted to join non-existent or inactive jam {jam_id}")
             emit('join_failed', {'message': 'Jam session not found or has ended.'})
             return
@@ -726,7 +751,7 @@ def join_session_handler(data): # Renamed to avoid conflict with Flask route
         updated_participants[request.sid] = nickname
         db.collection('jam_sessions').document(jam_id).update({'participants': updated_participants})
 
-        # Update local tracking
+        # Update local tracking (redundant if using Firestore as source of truth, but kept for consistency)
         if jam_id not in jam_sessions:
             jam_sessions[jam_id] = {
                 'name': jam_data.get('name', 'Unnamed Jam'),
@@ -772,6 +797,7 @@ def sync_playback_state(data):
 
     jam_id = data.get('jam_id')
     if not jam_id:
+        logging.warning("Received sync_playback_state without jam_id.")
         return
 
     try:
@@ -797,6 +823,7 @@ def sync_playback_state(data):
             'playback_state': new_playback_state,
             'playlist': data.get('playlist', []) # Host sends full playlist
         })
+        logging.info(f"Host {request.sid} synced playback state for jam {jam_id}.")
 
     except Exception as e:
         logging.error(f"Error syncing playback state for jam {jam_id} to Firestore: {e}")

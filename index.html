@@ -17,58 +17,58 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, collection, query, where, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Global variables provided by the Canvas environment (DO NOT MODIFY THESE LINES)
+        // Hardcoded Firebase Config (from your provided values)
+        // This ensures the frontend always has the correct Firebase project details.
+        const firebaseConfig = {
+          apiKey: "AIzaSyCkRrCzqelHrxOBUIv85am3LkRynyxETk8",
+          authDomain: "tunejam-aa554.firebaseapp.com",
+          projectId: "tunejam-aa554",
+          storageBucket: "tunejam-aa554.firebasestorage.app",
+          messagingSenderId: "340845090260",
+          appId: "1:340845090260:web:3d8c3141ccf52015fab241",
+          measurementId: "G-C11GPCQDQH"
+        };
+
+        // Global variables provided by the Canvas environment. We still keep __app_id and __initial_auth_token.
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        // Parse firebaseConfig safely. If __firebase_config is not a valid JSON string, this might be problematic.
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        // Initialize Firebase. Handle potential missing projectId.
+        // Initialize Firebase.
         let app;
         let db;
         let auth;
 
         // Ensure Firebase initialization happens after the DOM is loaded
-        // and handle potential missing projectId if __firebase_config is not correctly provided.
         document.addEventListener('DOMContentLoaded', async () => {
             try {
-                if (firebaseConfig && Object.keys(firebaseConfig).length > 0 && firebaseConfig.projectId) {
-                    app = initializeApp(firebaseConfig);
-                    db = getFirestore(app);
-                    auth = getAuth(app);
-                    console.log("Firebase app, db, auth initialized successfully.");
+                // Initialize Firebase app with the hardcoded config
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                console.log("Firebase app, db, auth initialized successfully with hardcoded config.");
 
-                    // Authenticate Firebase user
-                    if (initialAuthToken) {
-                        await signInWithCustomToken(auth, initialAuthToken);
-                        console.log("Signed in with custom token.");
-                    } else {
-                        await signInAnonymously(auth);
-                        console.log("Signed in anonymously.");
-                    }
-
-                    // Now that auth is ready, set up the auth state listener
-                    onAuthStateChanged(auth, async (user) => {
-                        if (user) {
-                            userId = user.uid;
-                            console.log("Firebase authentication state changed. User ID:", userId);
-                            // Proceed with initial app load and jam session logic
-                            await handleInitialLoadAndJamJoin();
-                        } else {
-                            userId = null;
-                            console.log("Firebase user logged out or no user.");
-                            // If user logs out, reset UI or show login prompt if necessary
-                            // For this app, simply means jam features might be limited.
-                        }
-                    });
-
+                // Authenticate Firebase user
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                    console.log("Signed in with custom token.");
                 } else {
-                    console.error("Firebase config is missing or invalid. Please ensure '__firebase_config' is correctly provided by the environment, especially 'projectId'.", firebaseConfig);
-                    showMessage("Firebase setup error. Jam features may not work. Check console for details.", 6000);
-                    // Fallback if Firebase is not initialized, proceed without Firebase features
-                    userId = 'anonymous_no_firebase_' + Date.now(); // Dummy ID
-                    await handleInitialLoadAndJamJoin(); // Still initialize UI
+                    await signInAnonymously(auth);
+                    console.log("Signed in anonymously.");
                 }
+
+                // Now that auth is ready, set up the auth state listener
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        console.log("Firebase authentication state changed. User ID:", userId);
+                        // Proceed with initial app load and jam session logic
+                        await handleInitialLoadAndJamJoin();
+                    } else {
+                        userId = null;
+                        console.log("Firebase user logged out or no user.");
+                    }
+                });
+
             } catch (error) {
                 console.error("Error during Firebase initialization or sign-in:", error);
                 showMessage(`Firebase initialization failed: ${error.message}. Jam features may not work.`, 6000);
@@ -80,7 +80,6 @@
 
         // The remaining script logic remains within this module.
         // `db`, `auth`, `doc`, `onSnapshot` etc. will be accessible here directly from imports.
-        // No need to expose them to `window` for internal script use.
     </script>
 
     <style>
@@ -566,10 +565,9 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, collection, query, where, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // Global variables provided by the Canvas environment (DO NOT MODIFY THESE LINES)
+        
+        // Global variables provided by the Canvas environment. We still use __initial_auth_token.
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         // Backend URL for Flask app (leave empty if on the same domain/port)

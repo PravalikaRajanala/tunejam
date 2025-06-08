@@ -338,7 +338,7 @@
     </div>
 
     <div class="playlist-card bg-white shadow-xl rounded-2xl p-6 md:p-8 w-full max-w-sm border border-gray-100">
-        <!-- Jam Session Info Display -->
+        <!-- Jam Session Info Display (RE-ADDED) -->
         <div id="jam-session-info" class="text-center mb-4 hidden">
             <p class="text-indigo-600 font-bold text-lg" id="current-jam-name">Jam Session: <span id="jam-name-display"></span></p>
             <p class="text-gray-600 text-sm" id="jam-participants-display">Participants: </p>
@@ -350,11 +350,11 @@
                 Playlist
             </h2>
             <div class="relative flex items-center space-x-2">
-                <!-- Three dots icon for Jam Session and Add Song options -->
+                <!-- Three dots icon for Jam Session and Add Song options (RE-ADDED) -->
                 <button id="open-options-dropdown-button" class="px-3 py-2 bg-gray-600 text-white rounded-lg shadow hover:bg-gray-700 transition-colors duration-200 text-sm">
                     <i class="fas fa-ellipsis-v"></i> <!-- Three dots icon -->
                 </button>
-                <!-- Options dropdown -->
+                <!-- Options dropdown (RE-ADDED) -->
                 <div id="options-dropdown" class="absolute right-0 top-full mt-2 w-48 bg-white rounded-md shadow-lg z-10 hidden">
                     <button id="add-song-dropdown" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
                         <i class="fas fa-plus mr-2"></i>Add Song
@@ -362,7 +362,6 @@
                     <button id="create-jam-session-dropdown-btn" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
                         <i class="fas fa-headphones mr-2"></i>Create Jam Session
                     </button>
-                    <!-- Join Jam Session button now in options dropdown -->
                     <button id="join-jam-session-dropdown-btn" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
                         <i class="fas fa-door-open mr-2"></i>Join Jam Session
                     </button>
@@ -371,19 +370,24 @@
         </div>
 
         <div class="flex justify-center space-x-4 mb-6 flex-wrap">
-            <!-- "Add Songs" button removed here as functionality moved to dropdown and modal -->
+            <!-- "Add Songs" button (RE-ADDED, now opens the consolidated modal) -->
+            <button id="show-add-options-button" class="px-4 py-2 bg-green-600 text-white rounded-lg shadow hover:bg-green-700 transition-colors duration-200 text-sm">
+                <i class="fas fa-plus mr-2"></i>Add Songs
+            </button>
             <button id="manage-playlist-button" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg shadow hover:bg-gray-300 transition-colors duration-200 text-sm">
                 <i class="fas fa-edit mr-2"></i>Manage Playlist
             </button>
         </div>
 
-        <!-- Removed Google Drive Search Section (add-options-container) -->
+        <!-- Removed Google Drive Search Section -->
+        <!-- Removed "YouTube Options" section from here, as it's now in the modal -->
 
         <ul id="playlist-container" class="space-y-3 max-h-80 overflow-y-auto pr-2 mt-6 border-t border-gray-200 pt-6">
         </ul>
     </div>
 
     <!-- Add Song Modal (Consolidated: YouTube, Hosted MP3 Search, Direct MP3 URL) -->
+    <!-- Renamed from Youtube-modal to add-song-modal for clarity -->
     <div id="add-song-modal" class="modal-overlay hidden">
         <div class="modal-content">
             <button class="modal-close-button" onclick="closeAddSongModal()">×</button>
@@ -393,7 +397,7 @@
             <div class="mb-6 border-b border-gray-200 pb-4">
                 <h4 class="text-xl font-bold text-gray-700 mb-3">Add by YouTube URL</h4>
                 <p class="text-sm text-gray-600 mb-2">
-                    Enter a YouTube video URL to get metadata and play with YouTube player.
+                    Enter a YouTube video URL to get metadata and play.
                 </p>
                 <input type="text" id="youtube-url-input-modal" placeholder="YouTube Video/Playlist URL (e.g., https://youtu.be/dQw4w9WgXcQ)"
                        class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 mb-3">
@@ -454,7 +458,7 @@
         </div>
     </div>
 
-    <!-- Create Jam Session Modal -->
+    <!-- Create Jam Session Modal (RE-ADDED) -->
     <div id="create-jam-modal" class="modal-overlay hidden">
         <div class="modal-content">
             <button class="modal-close-button" onclick="closeCreateJamModal()">×</button>
@@ -485,7 +489,7 @@
         </div>
     </div>
 
-    <!-- Join Jam Session Modal -->
+    <!-- Join Jam Session Modal (RE-ADDED) -->
     <div id="join-jam-modal" class="modal-overlay hidden">
         <div class="modal-content">
             <button class="modal-close-button" onclick="closeJoinJamModal()">×</button>
@@ -504,6 +508,7 @@
 
 
     <div id="custom-message-box" class="hidden"></div>
+
     <div id="loading-overlay" class="loading-overlay hidden">
         <div class="spinner"></div>
     </div>
@@ -524,9 +529,9 @@
         const signInWithCustomToken = window.firebaseSignInWithCustomToken;
 
 
-        const FLASK_BACKEND_URL = ''; // Leave empty if running on the same domain/port, or specify 'http://localhost:5000'
-
-        // Removed: PUBLIC_TELUGU_SONGS_FOLDER_ID # No longer needed
+        const FLASK_BACKEND_URL = ''; // Leave empty if running on the same domain/port
+        // Removed: YOUTUBE_API_KEY as it's now handled by the backend proxy
+        // Removed: PUBLIC_TELUGU_SONGS_FOLDER_ID as Google Drive is removed
 
         // IMPORTANT: This is the base URL for your Netlify-hosted songs!
         const BASE_HOSTED_MP3_CDN_URL = "https://vermillion-raindrop-7966d4.netlify.app"; // <--- CONFIGURE THIS URL
@@ -545,7 +550,10 @@
         let youtubePlayer;
         let youtubePlayerReady = false;
 
-        // Removed: isPlayingRandomDriveMode, fullDriveSongsList # No longer needed
+        // --- Removed Random Playback Google Drive related state ---
+        // let isPlayingRandomDriveMode = false;
+        // let fullDriveSongsList = []; 
+        // const RANDOM_QUEUE_SIZE = 5; 
 
         // --- DOM Elements ---
         const audioPlayer = document.getElementById('audio-player');
@@ -566,36 +574,45 @@
         const playlistContainer = document.getElementById('playlist-container');
 
         // Buttons and Dropdowns
-        // Removed: addSongsButton, addOptionsContainer, googledriveMainSearchInput etc.
-        const openOptionsDropdownButton = document.getElementById('open-options-dropdown-button'); // Three dots button
-        const optionsDropdown = document.getElementById('options-dropdown'); // Dropdown menu
-        const addSongDropdown = document.getElementById('add-song-dropdown'); // "Add Song" in dropdown (formerly Add YouTube Song)
-        const createJamSessionDropdownBtn = document.getElementById('create-jam-session-dropdown-btn'); // "Create Jam Session" in dropdown
-        const joinJamSessionDropdownBtn = document.getElementById('join-jam-session-dropdown-btn'); // "Join Jam Session" in dropdown
+        const showAddOptionsButton = document.getElementById('show-add-options-button'); // "Add Songs" button
+        const addOptionsContainer = document.getElementById('add-options-container'); // Container that "Add Songs" button toggles (will be removed as a search container)
+        const addSongButton = document.getElementById('add-song-button'); // "YouTube (Beta)" button inside add-options-container
         const managePlaylistButton = document.getElementById('manage-playlist-button');
         // Removed: playRandomDriveSongsButton
 
+        // RE-ADDED: Three Dots dropdown elements
+        const openOptionsDropdownButton = document.getElementById('open-options-dropdown-button'); // Three dots button
+        const optionsDropdown = document.getElementById('options-dropdown'); // Dropdown menu
+        const addSongDropdown = document.getElementById('add-song-dropdown'); // "Add Song" in dropdown
+        const createJamSessionDropdownBtn = document.getElementById('create-jam-session-dropdown-btn'); // "Create Jam Session" in dropdown
+        const joinJamSessionDropdownBtn = document.getElementById('join-jam-session-dropdown-btn'); // "Join Jam Session" in dropdown
+
         // Modals
-        const addSongModal = document.getElementById('add-song-modal'); // Consolidated modal
+        const addSongModal = document.getElementById('add-song-modal'); // CONSOLIDATED modal (formerly Youtube-modal)
         const managePlaylistModal = document.getElementById('manage-playlist-modal');
-        
+        // RE-ADDED: Jam session modals
+        const createJamModal = document.getElementById('create-jam-modal');
+        const joinJamModal = document.getElementById('join-jam-modal');
+
+
         // Elements within the consolidated Add Song Modal
         const youtubeUrlInputModal = document.getElementById('youtube-url-input-modal');
-        const addFromUrlButton = document.getElementById('add-from-url-button'); // "Add URL" button for YouTube
+        const addFromUrlButton = document.getElementById('add-from-url-button');
         const youtubeTextSearchInput = document.getElementById('youtube-text-search-input');
         const performYoutubeTextSearchButton = document.getElementById('perform-youtube-text-search');
-        const youtubeSearchResults = document.getElementById('youtube-search-results');
-        const hostedMp3SearchInput = document.getElementById('hosted-mp3-search-input'); // Hosted MP3 search input
-        const performHostedMp3SearchButton = document.getElementById('perform-hosted-mp3-search'); // Hosted MP3 search button
-        const hostedMp3SearchResults = document.getElementById('hosted-mp3-search-results'); // Hosted MP3 search results
-        const directMp3UrlInput = document.getElementById('direct-mp3-url-input'); // Direct MP3 URL input
-        const addDirectMp3Button = document.getElementById('add-direct-mp3-button'); // "Add MP3 to Playlist" button
+        const youtubeSearchResults = document.getElementById('youtube-search-results'); // Renamed from Youtube-results
+        const hostedMp3SearchInput = document.getElementById('hosted-mp3-search-input'); // NEW
+        const performHostedMp3SearchButton = document.getElementById('perform-hosted-mp3-search'); // NEW
+        const hostedMp3SearchResults = document.getElementById('hosted-mp3-search-results'); // NEW
+        const directMp3UrlInput = document.getElementById('direct-mp3-url-input');
+        const addDirectMp3Button = document.getElementById('add-direct-mp3-button');
+
+        // Removed: Google Drive elements (googledriveMainSearchInput, performGoogledriveMainSearchButton, googledriveMainSearchResults)
 
         const editablePlaylistContainer = document.getElementById('editable-playlist-container');
         const playlistEmptyMessage = document.getElementById('playlist-empty-message');
 
-        // Jam Session Modals and Elements
-        const createJamModal = document.getElementById('create-jam-modal');
+        // RE-ADDED: Jam session related DOM elements
         const jamNameInput = document.getElementById('jam-name-input');
         const nicknameInputCreate = document.getElementById('nickname-input-create');
         const createJamButton = document.getElementById('create-jam-button');
@@ -603,7 +620,6 @@
         const jamShareLinkInput = document.getElementById('jam-share-link');
         const copyShareLinkButton = document.getElementById('copy-share-link-button');
 
-        const joinJamModal = document.getElementById('join-jam-modal');
         const joinJamNameDisplay = document.getElementById('join-jam-name-display');
         const nicknameInputJoin = document.getElementById('nickname-input-join');
         const joinJamButton = document.getElementById('join-jam-button');
@@ -612,7 +628,6 @@
         const jamNameDisplay = document.getElementById('jam-name-display');
         const jamParticipantsDisplay = document.getElementById('jam-participants-display');
         const leaveJamSessionButton = document.getElementById('leave-jam-session-button');
-
 
         const playlist = []; // Main player local playlist. This is only used when NOT in a jam session.
 
@@ -654,9 +669,7 @@
             return `${minutes}:${remainingSeconds < 10 ? '0' : ''}${remainingSeconds}`;
         }
 
-        // Removed: shuffleArray as no longer using Google Drive random playback
-        // Removed: getUniqueRandomSongFromFullList as no longer using Google Drive random playback
-
+        // Removed: shuffleArray, getUniqueRandomSongFromFullList related to Google Drive random play
 
         function showMessage(message, duration = 3000) {
             const msgBox = document.getElementById('custom-message-box');
@@ -808,7 +821,7 @@
             audioPlayer.src = ''; // Clear source
 
             if (track.type === 'audio') { // For MP3 files (Netlify-hosted or direct URL)
-                audioPlayer.src = track.url;
+                audioPlayer.src = track.url; // Assuming 'url' is the correct property for hosted audio
                 audioPlayer.load();
                 audioPlayer.currentTime = seekTime;
                 if (autoPlay) {
@@ -855,7 +868,7 @@
                             type: "audio", // Now it's a local audio file served by Flask
                             title: track.title,
                             artist: track.artist,
-                            url: downloadedAudioUrl, // Update to the new URL
+                            url: downloadedAudioUrl, // Update to the new URL (was audioSrc in original user file)
                             albumArtSrc: track.albumArtSrc,
                             duration: track.duration // Keep duration if known
                         };
@@ -904,6 +917,7 @@
             }
         }
 
+
         function playNextTrack() {
             const activePlaylist = currentJamId ? jamSessionPlaylist : playlist;
 
@@ -928,8 +942,6 @@
             }
             renderPlaylist(); // Update playlist to reflect highlight
         }
-
-        // Removed: getUniqueRandomSongFromFullList
 
         // --- Playback Controls Event Listeners ---
         playPauseButton.addEventListener('click', () => {
@@ -1278,7 +1290,7 @@
             audioPlayer.pause();
             audioPlayer.src = '';
             // If YouTube player is active, pause it too
-            if (youtubePlayerReady && youtubeIframeDiv.classList.contains('hidden')) { // Check if YouTube player is visible
+            if (youtubePlayerReady && !youtubeIframeDiv.classList.contains('hidden')) { // Check if YouTube player is visible
                 youtubePlayer.pauseVideo();
                 youtubePlayer.cueVideoById(''); // Clear the video
             }
@@ -1309,7 +1321,7 @@
         }
 
         // --- Modal Control Functions ---
-        // Unified function to open the Add Song modal
+        // Open/Close for the consolidated Add Song modal
         function openAddSongModal() { 
             console.log("Opening Add Song Modal");
             addSongModal.classList.remove('hidden');
@@ -1538,17 +1550,14 @@
                 renderPlaylist(); // Re-render the main local playlist
                 showMessage(`Added "${song.title}" to your local playlist!`, 2000);
             }
-            closeAddSongModal(); // Close modal after adding
+            closeAddSongModal(); // Close modal after adding (if it was opened)
         }
-
-        // Removed: fetchAllDriveSongsForRandomPlayback, startDynamicRandomPlayback, isPlayingRandomDriveMode, RANDOM_QUEUE_SIZE, fullDriveSongsList
 
         // --- Jam Session UI & Logic ---
         function enableHostControls(enable) {
             const buttons = [
                 playPauseButton, rewindButton, forwardButton, nextButton,
-                managePlaylistButton
-                // Removed: playRandomDriveSongsButton, addSongsButton
+                managePlaylistButton, showAddOptionsButton // Re-included Add Songs button here
             ];
             buttons.forEach(btn => {
                 if (btn) {
@@ -1579,7 +1588,7 @@
             if (!enable) {
                 progressBar.style.pointerEvents = 'none';
                 volumeBar.style.pointerEvents = 'none';
-                // Removed: googledriveMainSearchInput, performGoogledriveMainSearchButton
+                // Removed Google Drive specific inputs
                 youtubeUrlInputModal.disabled = true;
                 addFromUrlButton.disabled = true;
                 youtubeTextSearchInput.disabled = true;
@@ -1816,8 +1825,14 @@
 
 
         // --- Event Listeners ---
-        // Removed: addSongsButton and its associated logic (Google Drive)
-        // Removed: performGoogledriveMainSearchButton and its associated logic (Google Drive)
+        // "Add Songs" button now toggles the consolidated add song modal (re-purposed from original show-add-options-button)
+        showAddOptionsButton.addEventListener('click', () => {
+            console.log("Add Songs button clicked, opening consolidated modal.");
+            openAddSongModal(); // Directly open the new modal
+            // Ensure other main dropdown/containers are closed for clean UI
+            optionsDropdown.classList.add('hidden');
+            // addOptionsContainer (Google Drive section) is now gone from HTML
+        });
 
         // Three dots button opens the options dropdown (Add Song, Jam Session)
         openOptionsDropdownButton.addEventListener('click', () => {
@@ -1996,10 +2011,11 @@
         // Existing Manage Playlist button listeners
         managePlaylistButton.addEventListener('click', openManagePlaylistModal);
 
-        // Removed: Google Drive search listeners (performGoogledriveMainSearchButton)
+        // Removed: Google Drive search listeners (performGoogledriveMainSearchButton and associated functions)
         // Removed: playRandomDriveSongsButton listener
 
         // --- YouTube "Add by URL" within consolidated modal ---
+        // Original: addFromUrlButton.addEventListener('click', handleYoutubeUrlAdd);
         addFromUrlButton.addEventListener('click', async () => {
             const url = youtubeUrlInputModal.value.trim();
             if (!url) { showMessage("Please enter a YouTube URL.", 2000); return; }
@@ -2012,6 +2028,7 @@
         });
 
         // --- YouTube "Search by Name" within consolidated modal ---
+        // Original: performYoutubeTextSearchButton.addEventListener('click', handleYoutubeTextSearch);
         performYoutubeTextSearchButton.addEventListener('click', async () => {
             const query = youtubeTextSearchInput.value.trim();
             if (!query) { showMessage("Please enter a search query.", 2000); return; }
@@ -2158,8 +2175,8 @@
             audioPlayer.volume = volumeBar.value / 100;
 
             // Hide all modals and dropdowns initially
-            // Removed: addOptionsContainer, now handled by consolidated modal
-            addSongModal.classList.add('hidden'); // Use the consolidated modal
+            // Removed: addOptionsContainer, which was for Google Drive search
+            addSongModal.classList.add('hidden'); // The consolidated modal
             managePlaylistModal.classList.add('hidden');
             createJamModal.classList.add('hidden');
             joinJamModal.classList.add('hidden');
@@ -2173,13 +2190,14 @@
                 // The actual jam name will be fetched in openJoinJamModal
                 await openJoinJamModal(urlJamId, `Session ${urlJamId}`);
             } else {
-                showMessage("Welcome! Use 'Add Song' to begin.", 3000); // Simplified welcome message
+                showMessage("Welcome! Use 'Add Songs' or the 3 dots menu to begin.", 3000); // Updated welcome message
                 trackTitle.textContent = "No song loaded";
                 artistName.textContent = "";
                 albumArt.src = "https://placehold.co/128x128/CCCCCC/FFFFFF?text=No+Track";
             }
         }
 
+        // Call initial load logic only after Firebase auth is ready (handled by onAuthStateChanged)
         // Ensure volume bar looks correct on load
         volumeBar.style.setProperty('--volume', `${volumeBar.value}%`);
     </script>

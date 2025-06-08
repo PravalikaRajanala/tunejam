@@ -210,7 +210,7 @@ def register():
     experience_level = request.json.get('experience_level')
 
     if not id_token or not username:
-        return jsonify({"error": "Missing required registration data (id_token or username)."})), 400
+        return jsonify({"error": "Missing required registration data (id_token or username)."}), 400
 
     try:
         # Verify the ID token to get the UID

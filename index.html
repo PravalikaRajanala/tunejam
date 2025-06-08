@@ -12,35 +12,75 @@
 
     <!-- Firebase SDK -->
     <script type="module">
-        // Import Firebase functions
+        // Import Firebase functions directly for use within this module scope
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, collection, query, where, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Global variables provided by the Canvas environment (DO NOT MODIFY THESE LINES)
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        // Parse firebaseConfig safely. If __firebase_config is not a valid JSON string, this might be problematic.
         const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        // Initialize Firebase
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
-        const auth = getAuth(app);
+        // Initialize Firebase. Handle potential missing projectId.
+        let app;
+        let db;
+        let auth;
 
-        // Expose Firebase instances globally for the script section (for original structure compatibility)
-        window.firebaseApp = app;
-        window.firebaseDb = db;
-        window.firebaseAuth = auth;
-        window.firebaseDoc = doc;
-        window.firebaseOnSnapshot = onSnapshot;
-        window.firebaseGetDoc = getDoc;
-        window.firebaseSetDoc = setDoc;
-        window.firebaseUpdateDoc = updateDoc;
-        window.firebaseDeleteDoc = deleteDoc;
-        window.firebaseCollection = collection;
-        window.firebaseSignInAnonymously = signInAnonymously;
-        window.firebaseOnAuthStateChanged = onAuthStateChanged;
-        window.firebaseSignInWithCustomToken = signInWithCustomToken;
+        // Ensure Firebase initialization happens after the DOM is loaded
+        // and handle potential missing projectId if __firebase_config is not correctly provided.
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                if (firebaseConfig && Object.keys(firebaseConfig).length > 0 && firebaseConfig.projectId) {
+                    app = initializeApp(firebaseConfig);
+                    db = getFirestore(app);
+                    auth = getAuth(app);
+                    console.log("Firebase app, db, auth initialized successfully.");
+
+                    // Authenticate Firebase user
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                        console.log("Signed in with custom token.");
+                    } else {
+                        await signInAnonymously(auth);
+                        console.log("Signed in anonymously.");
+                    }
+
+                    // Now that auth is ready, set up the auth state listener
+                    onAuthStateChanged(auth, async (user) => {
+                        if (user) {
+                            userId = user.uid;
+                            console.log("Firebase authentication state changed. User ID:", userId);
+                            // Proceed with initial app load and jam session logic
+                            await handleInitialLoadAndJamJoin();
+                        } else {
+                            userId = null;
+                            console.log("Firebase user logged out or no user.");
+                            // If user logs out, reset UI or show login prompt if necessary
+                            // For this app, simply means jam features might be limited.
+                        }
+                    });
+
+                } else {
+                    console.error("Firebase config is missing or invalid. Please ensure '__firebase_config' is correctly provided by the environment, especially 'projectId'.", firebaseConfig);
+                    showMessage("Firebase setup error. Jam features may not work. Check console for details.", 6000);
+                    // Fallback if Firebase is not initialized, proceed without Firebase features
+                    userId = 'anonymous_no_firebase_' + Date.now(); // Dummy ID
+                    await handleInitialLoadAndJamJoin(); // Still initialize UI
+                }
+            } catch (error) {
+                console.error("Error during Firebase initialization or sign-in:", error);
+                showMessage(`Firebase initialization failed: ${error.message}. Jam features may not work.`, 6000);
+                // Fallback for any other Firebase init errors
+                userId = 'anonymous_error_firebase_' + Date.now(); // Dummy ID
+                await handleInitialLoadAndJamJoin(); // Still initialize UI
+            }
+        });
+
+        // The remaining script logic remains within this module.
+        // `db`, `auth`, `doc`, `onSnapshot` etc. will be accessible here directly from imports.
+        // No need to expose them to `window` for internal script use.
     </script>
 
     <style>
@@ -516,22 +556,24 @@
     </div>
 
     <script type="module">
-        // Globally accessible Firebase instances (initialized in the script tag above)
-        const db = window.firebaseDb;
-        const auth = window.firebaseAuth;
-        const doc = window.firebaseDoc;
-        const onSnapshot = window.firebaseOnSnapshot;
-        const getDoc = window.firebaseGetDoc;
-        const setDoc = window.firebaseSetDoc;
-        const updateDoc = window.firebaseUpdateDoc;
-        const deleteDoc = window.firebaseDeleteDoc;
-        const collection = window.firebaseCollection;
-        const signInAnonymously = window.firebaseSignInAnonymously;
-        const onAuthStateChanged = window.firebaseOnAuthStateChanged;
-        const signInWithCustomToken = window.firebaseSignInWithCustomToken;
+        // Firebase instances declared globally within this module scope
+        let app;
+        let db;
+        let auth;
+        let userId = null; // Firebase User ID
 
+        // Imports for Firebase functions
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, collection, query, where, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const FLASK_BACKEND_URL = ''; // Leave empty if running on the same domain/port
+        // Global variables provided by the Canvas environment (DO NOT MODIFY THESE LINES)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Backend URL for Flask app (leave empty if on the same domain/port)
+        const FLASK_BACKEND_URL = ''; 
 
         // IMPORTANT: This is the base URL for your Netlify-hosted songs!
         const BASE_HOSTED_MP3_CDN_URL = "https://vermillion-raindrop-7966d4.netlify.app"; // <--- CONFIGURE THIS URL
@@ -575,12 +617,10 @@
 
         // Buttons and Dropdowns
         const showAddOptionsButton = document.getElementById('show-add-options-button'); // "Add Songs" button
-        // Removed: const addOptionsContainer = document.getElementById('add-options-container'); // This element is no longer in HTML
-        // Removed: const addSongButton = document.getElementById('add-song-button'); // This element is no longer in HTML
         const managePlaylistButton = document.getElementById('manage-playlist-button');
         const playRandomHostedSongsButton = document.getElementById('play-random-hosted-songs-button'); // New random play button
 
-        // RE-ADDED: Three Dots dropdown elements
+        // Three Dots dropdown elements
         const openOptionsDropdownButton = document.getElementById('open-options-dropdown-button'); // Three dots button
         const optionsDropdown = document.getElementById('options-dropdown'); // Dropdown menu
         const addSongDropdown = document.getElementById('add-song-dropdown'); // "Add Song" in dropdown
@@ -590,7 +630,6 @@
         // Modals
         const addSongModal = document.getElementById('add-song-modal'); // CONSOLIDATED modal
         const managePlaylistModal = document.getElementById('manage-playlist-modal');
-        // RE-ADDED: Jam session modals
         const createJamModal = document.getElementById('create-jam-modal');
         const joinJamModal = document.getElementById('join-jam-modal');
 
@@ -610,7 +649,7 @@
         const editablePlaylistContainer = document.getElementById('editable-playlist-container');
         const playlistEmptyMessage = document.getElementById('playlist-empty-message');
 
-        // RE-ADDED: Jam session related DOM elements
+        // Jam session related DOM elements
         const jamNameInput = document.getElementById('jam-name-input');
         const nicknameInputCreate = document.getElementById('nickname-input-create');
         const createJamButton = document.getElementById('create-jam-button');
@@ -632,31 +671,6 @@
         let currentTrackIndex = 0;
         let progressInterval;
         let syncInterval; // For host to send regular updates to Firestore
-
-        let userId = null; // Firebase User ID
-
-        // --- Firebase Auth Listener ---
-        onAuthStateChanged(auth, async (user) => {
-            if (user) {
-                userId = user.uid;
-                console.log("Firebase authenticated. User ID:", userId);
-                await handleInitialLoadAndJamJoin(); // Proceed with app initialization
-            } else {
-                console.log("Firebase not authenticated. Signing in anonymously...");
-                try {
-                    // Use initialAuthToken if available from Canvas, otherwise sign in anonymously
-                    if (initialAuthToken) {
-                        await signInWithCustomToken(auth, initialAuthToken);
-                    } else {
-                        await signInAnonymously(auth);
-                    }
-                    console.log("Signed in anonymously or with custom token.");
-                } catch (error) {
-                    console.error("Anonymous sign-in failed:", error);
-                    showMessage(`Authentication failed: ${error.message}. Jam features may not work.`, 6000);
-                }
-            }
-        });
 
 
         // --- Utility Functions ---
@@ -1443,6 +1457,7 @@
             currentJamId = jamId; // Set the jamId to be joined
 
             // Optional: Fetch actual jam name from Firestore if it exists and is active
+            // Ensure db is initialized before attempting Firestore operations
             if (db) {
                 try {
                     const jamDoc = await getDoc(doc(db, 'jam_sessions', jamId));
@@ -1459,6 +1474,8 @@
                     closeJoinJamModal();
                     currentJamId = null;
                 }
+            } else {
+                console.warn("Firestore not initialized. Cannot fetch jam details for join modal.");
             }
         }
 
@@ -1633,7 +1650,7 @@
         function enableHostControls(enable) {
             const buttons = [
                 playPauseButton, rewindButton, forwardButton, nextButton,
-                managePlaylistButton, showAddOptionsButton, playRandomHostedSongsButton // Re-included Add Songs & Random Play button here
+                managePlaylistButton, showAddOptionsButton, playRandomHostedSongsButton
             ];
             buttons.forEach(btn => {
                 if (btn) {
@@ -1664,25 +1681,25 @@
             if (!enable) {
                 progressBar.style.pointerEvents = 'none';
                 volumeBar.style.pointerEvents = 'none';
-                youtubeUrlInputModal.disabled = true;
-                addFromUrlButton.disabled = true;
-                youtubeTextSearchInput.disabled = true;
-                performYoutubeTextSearchButton.disabled = true;
-                hostedMp3SearchInput.disabled = true;
-                performHostedMp3SearchButton.disabled = true;
-                directMp3UrlInput.disabled = true;
-                addDirectMp3Button.disabled = true;
+                if (youtubeUrlInputModal) youtubeUrlInputModal.disabled = true;
+                if (addFromUrlButton) addFromUrlButton.disabled = true;
+                if (youtubeTextSearchInput) youtubeTextSearchInput.disabled = true;
+                if (performYoutubeTextSearchButton) performYoutubeTextSearchButton.disabled = true;
+                if (hostedMp3SearchInput) hostedMp3SearchInput.disabled = true;
+                if (performHostedMp3SearchButton) performHostedMp3SearchButton.disabled = true;
+                if (directMp3UrlInput) directMp3UrlInput.disabled = true;
+                if (addDirectMp3Button) addDirectMp3Button.disabled = true;
             } else {
                 progressBar.style.pointerEvents = 'auto';
                 volumeBar.style.pointerEvents = 'auto';
-                youtubeUrlInputModal.disabled = false;
-                addFromUrlButton.disabled = false;
-                youtubeTextSearchInput.disabled = false;
-                performYoutubeTextSearchButton.disabled = false;
-                hostedMp3SearchInput.disabled = false;
-                performHostedMp3SearchButton.disabled = false;
-                directMp3UrlInput.disabled = false;
-                addDirectMp3Button.disabled = false;
+                if (youtubeUrlInputModal) youtubeUrlInputModal.disabled = false;
+                if (addFromUrlButton) addFromUrlButton.disabled = false;
+                if (youtubeTextSearchInput) youtubeTextSearchInput.disabled = false;
+                if (performYoutubeTextSearchButton) performYoutubeTextSearchButton.disabled = false;
+                if (hostedMp3SearchInput) hostedMp3SearchInput.disabled = false;
+                if (performHostedMp3SearchButton) performHostedMp3SearchButton.disabled = false;
+                if (directMp3UrlInput) directMp3UrlInput.disabled = false;
+                if (addDirectMp3Button) addDirectMp3Button.disabled = false;
             }
         }
 

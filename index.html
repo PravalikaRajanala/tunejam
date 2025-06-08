@@ -334,6 +334,12 @@
             <input type="range" id="volume-bar" value="100" min="0" max="100" class="flex-grow h-2 rounded-lg appearance-none cursor-pointer bg-gray-200">
             <i class="fas fa-volume-up text-gray-600 text-base"></i>
         </div>
+        <!-- New button for playing random Hosted songs - MOVED HERE -->
+        <div class="flex justify-center mt-6">
+            <button id="play-random-hosted-songs-button" class="px-4 py-2 bg-purple-600 text-white rounded-lg shadow hover:bg-purple-700 transition-colors duration-200 text-sm">
+                <i class="fas fa-random mr-2"></i>Play Random Songs
+            </button>
+        </div>
     </div>
 
     <div class="playlist-card bg-white shadow-xl rounded-2xl p-6 md:p-8 w-full max-w-sm border border-gray-100">
@@ -376,9 +382,7 @@
             <button id="manage-playlist-button" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg shadow hover:bg-gray-300 transition-colors duration-200 text-sm">
                 <i class="fas fa-edit mr-2"></i>Manage Playlist
             </button>
-            <button id="play-random-hosted-songs-button" class="px-4 py-2 bg-purple-600 text-white rounded-lg shadow hover:bg-purple-700 transition-colors duration-200 text-sm">
-                <i class="fas fa-random mr-2"></i>Play Random Songs
-            </button>
+            <!-- Moved: play-random-hosted-songs-button was here, now in audio-player-card -->
         </div>
 
         <ul id="playlist-container" class="space-y-3 max-h-80 overflow-y-auto pr-2 mt-6 border-t border-gray-200 pt-6">
@@ -1898,25 +1902,40 @@
         // --- Event Listeners ---
         // "Add Songs" button now toggles the consolidated add song modal (re-purposed from original show-add-options-button)
         showAddOptionsButton.addEventListener('click', () => {
-            console.log("Add Songs button clicked, opening consolidated modal.");
+            console.log("Add Songs button (main) clicked, opening consolidated modal.");
             openAddSongModal(); // Directly open the new modal
             optionsDropdown.classList.add('hidden'); // Ensure dropdown is closed
         });
 
         // Three dots button opens the options dropdown (Add Song, Jam Session)
         openOptionsDropdownButton.addEventListener('click', () => {
-            console.log("Three dots button clicked");
+            console.log("Three dots button clicked, toggling dropdown.");
             optionsDropdown.classList.toggle('hidden'); // Toggle dropdown visibility
             // Close other modals if open
-            if (!addSongModal.classList.contains('hidden')) closeAddSongModal();
-            if (!managePlaylistModal.classList.contains('hidden')) closeManagePlaylistModal();
-            if (!createJamModal.classList.contains('hidden')) closeCreateJamModal();
-            if (!joinJamModal.classList.contains('hidden')) closeJoinJamModal();
+            if (!addSongModal.classList.contains('hidden')) {
+                console.log("Closing Add Song Modal from 3 dots click.");
+                closeAddSongModal();
+            }
+            if (!managePlaylistModal.classList.contains('hidden')) {
+                console.log("Closing Manage Playlist Modal from 3 dots click.");
+                closeManagePlaylistModal();
+            }
+            if (!createJamModal.classList.contains('hidden')) {
+                console.log("Closing Create Jam Modal from 3 dots click.");
+                closeCreateJamModal();
+            }
+            if (!joinJamModal.classList.contains('hidden')) {
+                console.log("Closing Join Jam Modal from 3 dots click.");
+                closeJoinJamModal();
+            }
         });
 
         // Hide dropdown if clicked outside
         document.addEventListener('click', (event) => {
             if (!openOptionsDropdownButton.contains(event.target) && !optionsDropdown.contains(event.target)) {
+                if (!optionsDropdown.classList.contains('hidden')) {
+                    console.log("Click outside dropdown, hiding dropdown.");
+                }
                 optionsDropdown.classList.add('hidden');
             }
         });
@@ -1924,6 +1943,7 @@
         // Handle "Add Song" click from dropdown (opens consolidated modal)
         addSongDropdown.addEventListener('click', (event) => {
             event.preventDefault(); // Prevent default link behavior
+            console.log("Add Song (from dropdown) clicked, opening consolidated modal.");
             openAddSongModal(); // This modal now handles YouTube, Hosted MP3, and direct MP3 URL
             optionsDropdown.classList.add('hidden'); // Hide dropdown after selection
         });
@@ -1957,7 +1977,7 @@
         // Handle Create Jam Session button within the modal
         createJamButton.addEventListener('click', async () => {
             if (!userId) {
-                showMessage("Authentication not ready. Please wait or refresh.", 3000);
+                showMessage("Authentication not ready. Please wait or really refresh to get an ID.", 3000);
                 return;
             }
             const jamName = jamNameInput.value.trim();

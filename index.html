@@ -29,7 +29,7 @@
           measurementId: "G-C11GPCQDQH"
         };
 
-        // Global variables provided by the Canvas environment. We still keep __app_id and __initial_auth_token.
+        // Global variables provided by the Canvas environment. We still use __app_id and __initial_auth_token.
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
@@ -37,6 +37,7 @@
         let app;
         let db;
         let auth;
+        let userId = null; // Firebase User ID
 
         // Ensure Firebase initialization happens after the DOM is loaded
         document.addEventListener('DOMContentLoaded', async () => {
@@ -47,13 +48,21 @@
                 auth = getAuth(app);
                 console.log("Firebase app, db, auth initialized successfully with hardcoded config.");
 
-                // Authenticate Firebase user
+                // Attempt to sign in with custom token first, then fallback to anonymous
                 if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                    console.log("Signed in with custom token.");
+                    try {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                        console.log("Signed in with custom token.");
+                    } catch (customTokenError) {
+                        console.warn("Failed to sign in with custom token:", customTokenError.code, customTokenError.message);
+                        // If custom token fails, try anonymous sign-in
+                        await signInAnonymously(auth);
+                        console.log("Signed in anonymously after custom token failure.");
+                    }
                 } else {
+                    // If no initialAuthToken is provided, sign in anonymously
                     await signInAnonymously(auth);
-                    console.log("Signed in anonymously.");
+                    console.log("Signed in anonymously (no custom token provided).");
                 }
 
                 // Now that auth is ready, set up the auth state listener
@@ -61,11 +70,29 @@
                     if (user) {
                         userId = user.uid;
                         console.log("Firebase authentication state changed. User ID:", userId);
+                        // Enable Jam Session buttons once authenticated
+                        createJamSessionDropdownBtn.disabled = false;
+                        createJamSessionDropdownBtn.classList.remove('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
+                        joinJamSessionDropdownBtn.disabled = false;
+                        joinJamSessionDropdownBtn.classList.remove('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
+                        createJamButton.disabled = false; // Also the modal button
+                        joinJamButton.disabled = false; // Also the modal button
+
                         // Proceed with initial app load and jam session logic
                         await handleInitialLoadAndJamJoin();
                     } else {
                         userId = null;
                         console.log("Firebase user logged out or no user.");
+                        // Disable Jam Session buttons if not authenticated
+                        createJamSessionDropdownBtn.disabled = true;
+                        createJamSessionDropdownBtn.classList.add('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
+                        joinJamSessionDropdownBtn.disabled = true;
+                        joinJamSessionDropdownBtn.classList.add('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
+                        createJamButton.disabled = true;
+                        joinJamButton.disabled = true;
+
+                        // Proceed with initial app load and jam session logic (for non-jam features)
+                        await handleInitialLoadAndJamJoin(); // Still initialize UI but without jam features
                     }
                 });
 
@@ -74,6 +101,15 @@
                 showMessage(`Firebase initialization failed: ${error.message}. Jam features may not work.`, 6000);
                 // Fallback for any other Firebase init errors
                 userId = 'anonymous_error_firebase_' + Date.now(); // Dummy ID
+                
+                // Ensure buttons are disabled on critical Firebase init failure
+                createJamSessionDropdownBtn.disabled = true;
+                createJamSessionDropdownBtn.classList.add('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
+                joinJamSessionDropdownBtn.disabled = true;
+                joinJamSessionDropdownBtn.classList.add('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
+                createJamButton.disabled = true;
+                joinJamButton.disabled = true;
+
                 await handleInitialLoadAndJamJoin(); // Still initialize UI
             }
         });
@@ -403,11 +439,16 @@
                     <button id="add-song-dropdown" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
                         <i class="fas fa-plus mr-2"></i>Add Song
                     </button>
-                    <button id="create-jam-session-dropdown-btn" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                    <!-- Disabled by default, enabled on successful Firebase auth -->
+                    <button id="create-jam-session-dropdown-btn" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 opacity-70 cursor-not-allowed pointer-events-none" disabled>
                         <i class="fas fa-headphones mr-2"></i>Create Jam Session
                     </button>
-                    <button id="join-jam-session-dropdown-btn" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                    <!-- Disabled by default, enabled on successful Firebase auth -->
+                    <button id="join-jam-session-dropdown-btn" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 opacity-70 cursor-not-allowed pointer-events-none" disabled>
                         <i class="fas fa-door-open mr-2"></i>Join Jam Session
+                    </button>
+                    <button id="logout-button" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                        <i class="fas fa-sign-out-alt mr-2"></i>Logout
                     </button>
                 </div>
             </div>
@@ -514,7 +555,8 @@
                 <input type="text" id="nickname-input-create" placeholder="Host" value="Host"
                        class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
             </div>
-            <button id="create-jam-button" class="w-full bg-indigo-600 text-white py-2 rounded-md hover:bg-indigo-700 transition-colors duration-200">
+            <!-- Disabled by default, enabled on Firebase auth success -->
+            <button id="create-jam-button" class="w-full bg-indigo-600 text-white py-2 rounded-md hover:bg-indigo-700 transition-colors duration-200 opacity-70 cursor-not-allowed" disabled>
                 <i class="fas fa-plus-circle mr-2"></i>Create Session
             </button>
             <div id="share-link-container" class="mt-6 p-3 bg-gray-100 border border-gray-200 rounded-lg hidden">
@@ -541,7 +583,8 @@
                 <input type="text" id="nickname-input-join" placeholder="Anonymous Listener"
                        class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
             </div>
-            <button id="join-jam-button" class="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700 transition-colors duration-200">
+            <!-- Disabled by default, enabled on Firebase auth success -->
+            <button id="join-jam-button" class="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700 transition-colors duration-200 opacity-70 cursor-not-allowed" disabled>
                 <i class="fas fa-door-open mr-2"></i>Join Session
             </button>
         </div>
@@ -563,10 +606,10 @@
 
         // Imports for Firebase functions
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, collection, query, where, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        // Global variables provided by the Canvas environment. We still use __initial_auth_token.
+        // Global variables provided by the Canvas environment. We still use __app_id and __initial_auth_token.
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
@@ -624,6 +667,7 @@
         const addSongDropdown = document.getElementById('add-song-dropdown'); // "Add Song" in dropdown
         const createJamSessionDropdownBtn = document.getElementById('create-jam-session-dropdown-btn'); // "Create Jam Session" in dropdown
         const joinJamSessionDropdownBtn = document.getElementById('join-jam-session-dropdown-btn'); // "Join Jam Session" in dropdown
+        const logoutButton = document.getElementById('logout-button'); // Logout button in dropdown
 
         // Modals
         const addSongModal = document.getElementById('add-song-modal'); // CONSOLIDATED modal
@@ -650,14 +694,14 @@
         // Jam session related DOM elements
         const jamNameInput = document.getElementById('jam-name-input');
         const nicknameInputCreate = document.getElementById('nickname-input-create');
-        const createJamButton = document.getElementById('create-jam-button');
+        const createJamButton = document.getElementById('create-jam-button'); // Modal button
         const shareLinkContainer = document.getElementById('share-link-container');
         const jamShareLinkInput = document.getElementById('jam-share-link');
         const copyShareLinkButton = document.getElementById('copy-share-link-button');
 
         const joinJamNameDisplay = document.getElementById('join-jam-name-display');
         const nicknameInputJoin = document.getElementById('nickname-input-join');
-        const joinJamButton = document.getElementById('join-jam-button');
+        const joinJamButton = document.getElementById('join-jam-button'); // Modal button
 
         const jamSessionInfoDiv = document.getElementById('jam-session-info');
         const jamNameDisplay = document.getElementById('jam-name-display');
@@ -1988,6 +2032,27 @@
             optionsDropdown.classList.add('hidden'); // Hide dropdown after selection
         });
 
+        // Handle Logout button click
+        logoutButton.addEventListener('click', async () => {
+            try {
+                await signOut(auth); // Sign out from client-side Firebase Auth
+                const res = await fetch(`${FLASK_BACKEND_URL}/logout`, { method: 'POST' }); // Invalidate session cookie on backend
+                if (res.ok) {
+                    showMessage("Logged out successfully! Redirecting to login...", 2000);
+                    setTimeout(() => {
+                        window.location.href = "/login"; // Redirect to login page
+                    }, 1000);
+                } else {
+                    const errorData = await res.json();
+                    showMessage(`Logout failed on server: ${errorData.error || 'Unknown error'}`, 3000);
+                }
+            } catch (error) {
+                console.error("Error during logout:", error);
+                showMessage(`Error logging out: ${error.message}`, 3000);
+            } finally {
+                optionsDropdown.classList.add('hidden'); // Hide dropdown
+            }
+        });
 
         // Handle Create Jam Session button within the modal
         createJamButton.addEventListener('click', async () => {
@@ -2097,7 +2162,7 @@
                         unsubscribeJamListener(); // Unsubscribe from Firestore
                         unsubscribeJamListener = null;
                     }
-                    window.history.pushState({}, '', `/`); // Remove jam_id from URL
+                    window.history.pushState({}, '', `/dashboard`); // Redirect to dashboard, not root login
                 }
             }
         };
@@ -2343,7 +2408,7 @@
                 unsubscribeJamListener(); // Unsubscribe from Firestore
                 unsubscribeJamListener = null;
             }
-            window.history.pushState({}, '', `/`); // Remove jam_id from URL
+            window.history.pushState({}, '', `/dashboard`); // Redirect to dashboard after session ends
         });
         
         // This event is sent by backend when participants join/leave (excluding host/self)

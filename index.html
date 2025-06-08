@@ -14,7 +14,7 @@
     <script type="module">
         // Import Firebase functions directly for use within this module scope
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, collection, query, where, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Hardcoded Firebase Config (from your provided values)
@@ -436,8 +436,9 @@
                 </button>
                 <!-- Options dropdown (RE-ADDED) -->
                 <div id="options-dropdown" class="absolute right-0 top-full mt-2 w-48 bg-white rounded-md shadow-lg z-10 hidden">
-                    <button id="add-song-dropdown" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
-                        <i class="fas fa-plus mr-2"></i>Add Song
+                    <!-- New YouTube add button -->
+                    <button id="add-youtube-song-dropdown" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                        <i class="fab fa-youtube mr-2"></i>Add YouTube Song <span class="text-blue-500 text-xs">(Beta)</span>
                     </button>
                     <!-- Disabled by default, enabled on successful Firebase auth -->
                     <button id="create-jam-session-dropdown-btn" class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 opacity-70 cursor-not-allowed pointer-events-none" disabled>
@@ -455,9 +456,9 @@
         </div>
 
         <div class="flex justify-center space-x-4 mb-6 flex-wrap">
-            <!-- "Add Songs" button (RE-ADDED, now opens the consolidated modal) -->
+            <!-- "Add Songs" button now opens the hosted MP3 search modal -->
             <button id="show-add-options-button" class="px-4 py-2 bg-green-600 text-white rounded-lg shadow hover:bg-green-700 transition-colors duration-200 text-sm">
-                <i class="fas fa-plus mr-2"></i>Add Songs
+                <i class="fas fa-plus mr-2"></i>Add Songs (MP3)
             </button>
             <button id="manage-playlist-button" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg shadow hover:bg-gray-300 transition-colors duration-200 text-sm">
                 <i class="fas fa-edit mr-2"></i>Manage Playlist
@@ -469,19 +470,42 @@
         </ul>
     </div>
 
-    <!-- Add Song Modal (Consolidated: YouTube, Hosted MP3 Search, Direct MP3 URL) -->
-    <div id="add-song-modal" class="modal-overlay hidden">
+    <!-- Hosted MP3 Search Modal (previously 'add-song-modal', now only for MP3 search) -->
+    <div id="hosted-mp3-search-modal" class="modal-overlay hidden">
         <div class="modal-content">
-            <button class="modal-close-button" onclick="closeAddSongModal()">×</button>
-            <h3 class="text-2xl font-bold text-gray-800 mb-6 text-center">Add Song</h3>
+            <button class="modal-close-button" onclick="closeHostedMp3SearchModal()">×</button>
+            <h3 class="text-2xl font-bold text-gray-800 mb-6 text-center">Add MP3 Songs</h3>
+
+            <!-- Section: Search Your Hosted MP3s (Netlify Songs) -->
+            <div class="mb-6 pb-4">
+                <p class="text-sm text-gray-600 mb-2">
+                    Search from your pre-uploaded MP3 collection. Add multiple songs without closing.
+                </p>
+                <div class="flex space-x-2 mb-3">
+                    <input type="text" id="hosted-mp3-search-input" placeholder="Search your songs by name/artist"
+                           class="flex-grow px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500">
+                    <button id="perform-hosted-mp3-search" class="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors duration-200">
+                        <i class="fas fa-search"></i>
+                    </button>
+                </div>
+                <div id="hosted-mp3-search-results" class="max-h-60 overflow-y-auto space-y-2"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- New YouTube Search Modal -->
+    <div id="youtube-search-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <button class="modal-close-button" onclick="closeYoutubeSearchModal()">×</button>
+            <h3 class="text-2xl font-bold text-gray-800 mb-6 text-center">Add YouTube Song <span class="text-blue-500 text-xl">(Beta)</span></h3>
 
             <!-- Section 1: Add by YouTube URL -->
             <div class="mb-6 border-b border-gray-200 pb-4">
                 <h4 class="text-xl font-bold text-gray-700 mb-3">Add by YouTube URL</h4>
                 <p class="text-sm text-gray-600 mb-2">
-                    Enter a YouTube video URL to get metadata and play.
+                    Enter a YouTube video URL to get metadata and add to playlist.
                 </p>
-                <input type="text" id="youtube-url-input-modal" placeholder="YouTube Video/Playlist URL (e.g., https://youtu.be/dQw4w9WgXcQ)"
+                <input type="text" id="youtube-url-input-modal" placeholder="YouTube Video URL (e.g., https://youtu.be/dQw4w9WgXcQ)"
                        class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 mb-3">
                 <button id="add-from-url-button" class="w-full bg-red-600 text-white py-2 rounded-md hover:bg-red-700 transition-colors duration-200">
                     <i class="fas fa-link mr-2"></i>Add URL
@@ -489,7 +513,7 @@
             </div>
 
             <!-- Section 2: Search YouTube by Name -->
-            <div class="mb-6 border-b border-gray-200 pb-4">
+            <div>
                 <h4 class="text-xl font-bold text-gray-700 mb-3">Search YouTube by Name</h4>
                 <div class="flex space-x-2 mb-3">
                     <input type="text" id="youtube-text-search-input" placeholder="Search video by name"
@@ -500,34 +524,9 @@
                 </div>
                 <div id="youtube-search-results" class="max-h-60 overflow-y-auto space-y-2"></div>
             </div>
-
-            <!-- Section 3: Search Your Hosted MP3s (Netlify Songs) -->
-            <div class="mb-6 border-b border-gray-200 pb-4">
-                <h4 class="text-xl font-bold text-gray-700 mb-3">Search Your Hosted MP3s</h4>
-                <div class="flex space-x-2 mb-3">
-                    <input type="text" id="hosted-mp3-search-input" placeholder="Search your songs by name/artist"
-                           class="flex-grow px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500">
-                    <button id="perform-hosted-mp3-search" class="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors duration-200">
-                        <i class="fas fa-search"></i>
-                    </button>
-                </div>
-                <div id="hosted-mp3-search-results" class="max-h-60 overflow-y-auto space-y-2"></div>
-            </div>
-
-            <!-- Section 4: Add by Direct MP3 URL -->
-            <div>
-                <h4 class="text-xl font-bold text-gray-700 mb-3">Add by Direct MP3 URL</h4>
-                <p class="text-sm text-gray-600 mb-2">
-                    Enter a direct URL to an MP3 file (e.g., from your Netlify hosted songs).
-                </p>
-                <input type="text" id="direct-mp3-url-input" placeholder="e.g., https://your-songs-cdn.netlify.app/MP3_Folder_001/MySong.mp3"
-                       class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 mb-3">
-                <button id="add-direct-mp3-button" class="w-full bg-green-600 text-white py-2 rounded-md hover:bg-green-700 transition-colors duration-200">
-                    <i class="fas fa-music mr-2"></i>Add MP3 to Playlist
-                </button>
-            </div>
         </div>
     </div>
+
 
     <!-- Manage Playlist Modal (existing) -->
     <div id="manage-playlist-modal" class="modal-overlay hidden">
@@ -657,36 +656,37 @@
         const playlistContainer = document.getElementById('playlist-container');
 
         // Buttons and Dropdowns
-        const showAddOptionsButton = document.getElementById('show-add-options-button'); // "Add Songs" button
+        const showAddOptionsButton = document.getElementById('show-add-options-button'); // "Add Songs" button (now for MP3 search)
         const managePlaylistButton = document.getElementById('manage-playlist-button');
         const playRandomHostedSongsButton = document.getElementById('play-random-hosted-songs-button'); // New random play button
 
         // Three Dots dropdown elements
         const openOptionsDropdownButton = document.getElementById('open-options-dropdown-button'); // Three dots button
         const optionsDropdown = document.getElementById('options-dropdown'); // Dropdown menu
-        const addSongDropdown = document.getElementById('add-song-dropdown'); // "Add Song" in dropdown
+        const addYoutubeSongDropdown = document.getElementById('add-youtube-song-dropdown'); // NEW: "Add YouTube Song" in dropdown
         const createJamSessionDropdownBtn = document.getElementById('create-jam-session-dropdown-btn'); // "Create Jam Session" in dropdown
         const joinJamSessionDropdownBtn = document.getElementById('join-jam-session-dropdown-btn'); // "Join Jam Session" in dropdown
         const logoutButton = document.getElementById('logout-button'); // Logout button in dropdown
 
         // Modals
-        const addSongModal = document.getElementById('add-song-modal'); // CONSOLIDATED modal
+        const hostedMp3SearchModal = document.getElementById('hosted-mp3-search-modal'); // NEW: Dedicated for MP3 search
+        const youtubeSearchModal = document.getElementById('youtube-search-modal'); // NEW: Dedicated for YouTube search/URL
         const managePlaylistModal = document.getElementById('manage-playlist-modal');
         const createJamModal = document.getElementById('create-jam-modal');
         const joinJamModal = document.getElementById('join-jam-modal');
 
 
-        // Elements within the consolidated Add Song Modal
+        // Elements within the new Hosted MP3 Search Modal
+        const hostedMp3SearchInput = document.getElementById('hosted-mp3-search-input');
+        const performHostedMp3SearchButton = document.getElementById('perform-hosted-mp3-search');
+        const hostedMp3SearchResults = document.getElementById('hosted-mp3-search-results');
+
+        // Elements within the new YouTube Search Modal
         const youtubeUrlInputModal = document.getElementById('youtube-url-input-modal');
         const addFromUrlButton = document.getElementById('add-from-url-button');
         const youtubeTextSearchInput = document.getElementById('youtube-text-search-input');
         const performYoutubeTextSearchButton = document.getElementById('perform-youtube-text-search');
         const youtubeSearchResults = document.getElementById('youtube-search-results');
-        const hostedMp3SearchInput = document.getElementById('hosted-mp3-search-input');
-        const performHostedMp3SearchButton = document.getElementById('perform-hosted-mp3-search');
-        const hostedMp3SearchResults = document.getElementById('hosted-mp3-search-results');
-        const directMp3UrlInput = document.getElementById('direct-mp3-url-input');
-        const addDirectMp3Button = document.getElementById('add-direct-mp3-button');
 
         const editablePlaylistContainer = document.getElementById('editable-playlist-container');
         const playlistEmptyMessage = document.getElementById('playlist-empty-message');
@@ -918,17 +918,17 @@
                 showLoading(); // Show loading overlay
                 playPauseButton.classList.remove('is-playing'); // Indicate not playing yet
                 try {
-                    const response = await fetch(`${FLASK_BACKEND_URL}/download_youtube_audio/${track.videoId}`);
-                    const data = await response.json();
+                    const response = await fetch(`${FLASK_BACKEND_URL}/proxy_youtube_audio/${track.videoId}`); // Use proxy for direct streaming
+                    // No need to check response.ok and data here, the proxy streams directly.
                     hideLoading(); // Hide loading overlay
                     if (response.ok) {
-                        const downloadedAudioUrl = data.audio_url;
+                        const proxiedAudioUrl = `${FLASK_BACKEND_URL}/proxy_youtube_audio/${track.videoId}`;
                         const newTrack = {
                             id: track.id, // Keep the same ID
                             type: "audio", // Now it's a local audio file served by Flask
                             title: track.title,
                             artist: track.artist,
-                            url: downloadedAudioUrl, // Update to the new URL (was audioSrc in original user file)
+                            url: proxiedAudioUrl, // Update to the new URL
                             albumArtSrc: track.albumArtSrc,
                             duration: track.duration // Keep duration if known
                         };
@@ -945,7 +945,7 @@
                                     jam_id: currentJamId,
                                     current_track_index: currentTrackIndex,
                                     current_playback_time: 0,
-                                    is_playing: true, // Start playing after download
+                                    is_playing: true, // Start playing after load
                                     playlist: targetPlaylist // Send updated playlist
                                 });
                             }
@@ -954,18 +954,20 @@
                              console.warn("Original track not found in playlist after download type change.");
                         }
                         
-                        showMessage(`Finished downloading "${track.title}". Playing now.`, 3000);
+                        showMessage(`Finished preparing "${track.title}". Playing now.`, 3000);
                         // Now, recursively call loadTrack with the updated track (which is now type 'audio')
-                        // This will handle playing the newly downloaded audio.
+                        // This will handle playing the newly prepared audio.
                         loadTrack(currentTrackIndex, autoPlay, seekTime); 
                     } else {
-                        showMessage(`Error downloading "${track.title}": ${data.error || 'Unknown error'}`, 5000);
+                        // Handle cases where the proxy itself fails
+                        const errorData = await response.json().catch(() => ({error: "Unknown proxy error"}));
+                        showMessage(`Error preparing "${track.title}": ${errorData.error || 'Unknown error'}`, 5000);
                         if (!currentJamId || isHost) { playNextTrack(); }
                     }
                 } catch (error) {
                     hideLoading();
-                    console.error("Error during YouTube audio download request:", error);
-                    showMessage(`Network error during download: ${error.message}`, 5000);
+                    console.error("Error during YouTube audio proxy request:", error);
+                    showMessage(`Network error during proxy: ${error.message}`, 5000);
                     if (!currentJamId || isHost) { playNextTrack(); }
                 }
             }
@@ -990,12 +992,12 @@
             if (isPlayingRandomHostedMode) {
                 // Remove the song that just finished from the active playlist (queue)
                 activePlaylist.shift(); 
-                // If a new random song is available from the full list, add it
+                // Add a new random song to the end if available
                 const newRandomSong = getUniqueRandomHostedSong();
                 if (newRandomSong) {
                     activePlaylist.push(newRandomSong);
                 } else {
-                    showMessage("Ran out of unique hosted songs in the random pool!", 3000);
+                    console.warn("Ran out of unique hosted songs to add to the random queue.");
                 }
                 renderPlaylist(); // Re-render to show updated queue
                 // Play the next song (which is now at index 0)
@@ -1006,6 +1008,7 @@
                     // If queue becomes empty (e.g., ran out of unique songs)
                     showMessage("Random playlist exhausted. Please add more songs or switch modes.", 5000);
                     resetPlayerUI();
+                    isPlayingRandomHostedMode = false;
                 }
             } else {
                 // Normal sequential playback logic
@@ -1033,13 +1036,15 @@
             }
 
             // Filter out songs already in the current playback playlist
+            const currentSongIds = new Set(playlist.map(song => song.id));
             const availableSongs = fullHostedSongsList.filter(
-                (song) => !playlist.some((qSong) => qSong.id === song.id)
+                (song) => !currentSongIds.has(song.id)
             );
 
             if (availableSongs.length === 0) {
-                // If all songs are already in the queue, allow repeats or reset pool
-                console.warn("All unique hosted songs are currently in the queue. Re-using songs.");
+                // If all unique songs are currently in the queue, allow repeats.
+                // This prevents the queue from emptying prematurely if there aren't many songs.
+                console.warn("All unique hosted songs are currently in the queue. Re-using songs randomly.");
                 return fullHostedSongsList[Math.floor(Math.random() * fullHostedSongsList.length)];
             }
 
@@ -1307,8 +1312,16 @@
                         return;
                     }
                     if (isPlayingRandomHostedMode) {
-                        isPlayingRandomHostedMode = false; // Disable random mode if a song is explicitly selected
+                        // If in random mode, clicking a specific song disables random and plays that song
+                        isPlayingRandomHostedMode = false;
                         showMessage("Random play mode disabled. Playing selected song.", 3000);
+                        // Clear the dynamic random queue, replace with just the selected song for local playback
+                        playlist.length = 0; // Clear it
+                        playlist.push(activePlaylist[index]); // Add the selected song
+                        currentTrackIndex = 0; // The selected song is now the first (and only) in the local playlist
+                        loadTrack(currentTrackIndex, true);
+                        renderPlaylist(); // Re-render to show only the selected song and highlight
+                        return; // Exit after handling this
                     }
                     loadTrack(index);
                     if (currentJamId && isHost) {
@@ -1381,6 +1394,7 @@
                         // Adjust currentTrackIndex if the removed song was before the current song
                         if (currentTrackIndex === indexToRemove) {
                             if (activePlaylist.length > 0) {
+                                // If the current song was removed, play the next one (or first if it was the last)
                                 updateFirestorePlaybackState(true, Math.min(indexToRemove, activePlaylist.length - 1), 0);
                             } else {
                                 // If playlist is empty, send reset state
@@ -1448,23 +1462,35 @@
         }
 
         // --- Modal Control Functions ---
-        // Open/Close for the consolidated Add Song modal
-        function openAddSongModal() { 
-            console.log("Opening Add Song Modal");
-            addSongModal.classList.remove('hidden');
+        // Open/Close for the new Hosted MP3 Search modal
+        function openHostedMp3SearchModal() { 
+            console.log("Opening Hosted MP3 Search Modal");
+            hostedMp3SearchModal.classList.remove('hidden');
             // Clear inputs on open
-            youtubeUrlInputModal.value = ''; 
-            youtubeTextSearchInput.value = '';
             hostedMp3SearchInput.value = '';
-            directMp3UrlInput.value = '';
             // Clear previous results
-            youtubeSearchResults.innerHTML = '';
             hostedMp3SearchResults.innerHTML = '';
         }
 
-        function closeAddSongModal() { 
-            console.log("Closing Add Song Modal");
-            addSongModal.classList.add('hidden');
+        function closeHostedMp3SearchModal() { 
+            console.log("Closing Hosted MP3 Search Modal");
+            hostedMp3SearchModal.classList.add('hidden');
+        }
+
+        // Open/Close for the new YouTube Search modal
+        function openYoutubeSearchModal() {
+            console.log("Opening YouTube Search Modal");
+            youtubeSearchModal.classList.remove('hidden');
+            // Clear inputs on open
+            youtubeUrlInputModal.value = '';
+            youtubeTextSearchInput.value = '';
+            // Clear previous results
+            youtubeSearchResults.innerHTML = '';
+        }
+
+        function closeYoutubeSearchModal() {
+            console.log("Closing YouTube Search Modal");
+            youtubeSearchModal.classList.add('hidden');
         }
 
         function openManagePlaylistModal() {
@@ -1528,7 +1554,8 @@
         }
 
         // --- Expose modal functions to window for inline onclicks ---
-        window.closeAddSongModal = closeAddSongModal; 
+        window.closeHostedMp3SearchModal = closeHostedMp3SearchModal; 
+        window.closeYoutubeSearchModal = closeYoutubeSearchModal;
         window.closeManagePlaylistModal = closeManagePlaylistModal;
         window.closeCreateJamModal = closeCreateJamModal;
         window.closeJoinJamModal = closeJoinJamModal;
@@ -1685,14 +1712,15 @@
                 renderPlaylist(); // Re-render the main local playlist
                 showMessage(`Added "${song.title}" to your local playlist!`, 2000);
             }
-            closeAddSongModal(); // Close modal after adding (if it was opened)
+            // Do NOT close the modal here. User needs to explicitly close it for multi-add.
         }
 
         // --- Jam Session UI & Logic ---
         function enableHostControls(enable) {
             const buttons = [
                 playPauseButton, rewindButton, forwardButton, nextButton,
-                managePlaylistButton, showAddOptionsButton, playRandomHostedSongsButton
+                managePlaylistButton, showAddOptionsButton, playRandomHostedSongsButton,
+                addYoutubeSongDropdown // New YouTube add button
             ];
             buttons.forEach(btn => {
                 if (btn) {
@@ -1705,7 +1733,8 @@
             // Specific handling for dropdown button and its items
             if (!enable) {
                 openOptionsDropdownButton.classList.add('opacity-70', 'cursor-not-allowed');
-                addSongDropdown.classList.add('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
+                // All dropdown items are disabled if not host
+                addYoutubeSongDropdown.classList.add('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
                 createJamSessionDropdownBtn.classList.add('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
                 // Allow guests to click Join, but disable if they are already in a jam
                 joinJamSessionDropdownBtn.classList.remove('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
@@ -1714,7 +1743,7 @@
                 }
             } else {
                 openOptionsDropdownButton.classList.remove('opacity-70', 'cursor-not-allowed');
-                addSongDropdown.classList.remove('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
+                addYoutubeSongDropdown.classList.remove('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
                 createJamSessionDropdownBtn.classList.remove('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
                 joinJamSessionDropdownBtn.classList.remove('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
             }
@@ -1723,25 +1752,22 @@
             if (!enable) {
                 progressBar.style.pointerEvents = 'none';
                 volumeBar.style.pointerEvents = 'none';
+                // Disable inputs in the hosted MP3 modal and YouTube modal if not host
+                if (hostedMp3SearchInput) hostedMp3SearchInput.disabled = true;
+                if (performHostedMp3SearchButton) performHostedMp3SearchButton.disabled = true;
                 if (youtubeUrlInputModal) youtubeUrlInputModal.disabled = true;
                 if (addFromUrlButton) addFromUrlButton.disabled = true;
                 if (youtubeTextSearchInput) youtubeTextSearchInput.disabled = true;
                 if (performYoutubeTextSearchButton) performYoutubeTextSearchButton.disabled = true;
-                if (hostedMp3SearchInput) hostedMp3SearchInput.disabled = true;
-                if (performHostedMp3SearchButton) performHostedMp3SearchButton.disabled = true;
-                if (directMp3UrlInput) directMp3UrlInput.disabled = true;
-                if (addDirectMp3Button) addDirectMp3Button.disabled = true;
             } else {
                 progressBar.style.pointerEvents = 'auto';
                 volumeBar.style.pointerEvents = 'auto';
+                if (hostedMp3SearchInput) hostedMp3SearchInput.disabled = false;
+                if (performHostedMp3SearchButton) performHostedMp3SearchButton.disabled = false;
                 if (youtubeUrlInputModal) youtubeUrlInputModal.disabled = false;
                 if (addFromUrlButton) addFromUrlButton.disabled = false;
                 if (youtubeTextSearchInput) youtubeTextSearchInput.disabled = false;
                 if (performYoutubeTextSearchButton) performYoutubeTextSearchButton.disabled = false;
-                if (hostedMp3SearchInput) hostedMp3SearchInput.disabled = false;
-                if (performHostedMp3SearchButton) performHostedMp3SearchButton.disabled = false;
-                if (directMp3UrlInput) directMp3UrlInput.disabled = false;
-                if (addDirectMp3Button) addDirectMp3Button.disabled = false;
             }
         }
 
@@ -1900,7 +1926,7 @@
                     renderPlaylist(); // Show local playlist
                     clearInterval(syncInterval); // Stop any host sync interval
                     if (unsubscribeJamListener) unsubscribeJamListener();
-                    window.history.pushState({}, '', `/`); // Remove jam_id from URL
+                    window.history.pushState({}, '', `/dashboard`); // Remove jam_id from URL
                 }
             }, (error) => {
                 console.error("Error listening to jam session updates:", error);
@@ -1915,7 +1941,7 @@
                 renderPlaylist();
                 clearInterval(syncInterval);
                 if (unsubscribeJamListener) unsubscribeJamListener();
-                window.history.pushState({}, '', `/`); // Remove jam_id from URL
+                window.history.pushState({}, '', `/dashboard`); // Remove jam_id from URL
             });
         }
 
@@ -1959,10 +1985,10 @@
 
 
         // --- Event Listeners ---
-        // "Add Songs" button now toggles the consolidated add song modal (re-purposed from original show-add-options-button)
+        // "Add Songs" button now opens the new Hosted MP3 search modal
         showAddOptionsButton.addEventListener('click', () => {
-            console.log("Add Songs button (main) clicked, opening consolidated modal.");
-            openAddSongModal(); // Directly open the new modal
+            console.log("Add Songs (MP3) button clicked, opening Hosted MP3 Search Modal.");
+            openHostedMp3SearchModal(); 
             optionsDropdown.classList.add('hidden'); // Ensure dropdown is closed
         });
 
@@ -1971,9 +1997,13 @@
             console.log("Three dots button clicked, toggling dropdown.");
             optionsDropdown.classList.toggle('hidden'); // Toggle dropdown visibility
             // Close other modals if open
-            if (!addSongModal.classList.contains('hidden')) {
-                console.log("Closing Add Song Modal from 3 dots click.");
-                closeAddSongModal();
+            if (!hostedMp3SearchModal.classList.contains('hidden')) {
+                console.log("Closing Hosted MP3 Search Modal from 3 dots click.");
+                closeHostedMp3SearchModal();
+            }
+            if (!youtubeSearchModal.classList.contains('hidden')) {
+                console.log("Closing YouTube Search Modal from 3 dots click.");
+                closeYoutubeSearchModal();
             }
             if (!managePlaylistModal.classList.contains('hidden')) {
                 console.log("Closing Manage Playlist Modal from 3 dots click.");
@@ -1999,15 +2029,15 @@
             }
         });
 
-        // Handle "Add Song" click from dropdown (opens consolidated modal)
-        addSongDropdown.addEventListener('click', (event) => {
+        // Handle "Add YouTube Song" click from dropdown (opens new YouTube modal)
+        addYoutubeSongDropdown.addEventListener('click', (event) => {
             event.preventDefault(); // Prevent default link behavior
-            console.log("Add Song (from dropdown) clicked, opening consolidated modal.");
-            openAddSongModal(); // This modal now handles YouTube, Hosted MP3, and direct MP3 URL
+            console.log("Add YouTube Song (from dropdown) clicked, opening YouTube Search Modal.");
+            openYoutubeSearchModal(); 
             optionsDropdown.classList.add('hidden'); // Hide dropdown after selection
         });
 
-        // Handle "Create Jam Session" click from dropdown
+        // Handle Create Jam Session button within the dropdown menu
         createJamSessionDropdownBtn.addEventListener('click', (event) => {
             event.preventDefault(); // Prevent default link behavior
             if (currentJamId) {
@@ -2019,7 +2049,7 @@
             optionsDropdown.classList.add('hidden'); // Hide dropdown after selection
         });
 
-        // Handle "Join Jam Session" click from dropdown
+        // Handle Join Jam Session button within the dropdown menu
         joinJamSessionDropdownBtn.addEventListener('click', (event) => {
             event.preventDefault(); // Prevent default link behavior
             if (currentJamId) {
@@ -2188,7 +2218,7 @@
         // Existing Manage Playlist button listeners
         managePlaylistButton.addEventListener('click', openManagePlaylistModal);
 
-        // --- YouTube "Add by URL" within consolidated modal ---
+        // --- YouTube "Add by URL" within new youtubeSearchModal ---
         addFromUrlButton.addEventListener('click', async () => {
             const url = youtubeUrlInputModal.value.trim();
             if (!url) { showMessage("Please enter a YouTube URL.", 2000); return; }
@@ -2200,7 +2230,7 @@
             }
         });
 
-        // --- YouTube "Search by Name" within consolidated modal ---
+        // --- YouTube "Search by Name" within new youtubeSearchModal ---
         performYoutubeTextSearchButton.addEventListener('click', async () => {
             const query = youtubeTextSearchInput.value.trim();
             if (!query) { showMessage("Please enter a search query.", 2000); return; }
@@ -2216,41 +2246,19 @@
             renderSearchResults(results, hostedMp3SearchResults); // Use generic render function
         });
 
-        // --- Add by Direct MP3 URL ---
-        addDirectMp3Button.addEventListener('click', () => {
-            const mp3Url = directMp3UrlInput.value.trim();
-            if (!mp3Url) {
-                showMessage("Please enter a direct MP3 URL.", 2000);
-                return;
-            }
-            // Basic validation for MP3 URL
-            if (!mp3Url.match(/\.(mp3|ogg|wav)$/i)) {
-                showMessage("URL does not look like an audio file (needs .mp3, .ogg, or .wav extension).", 3000);
-                return;
-            }
-
-            // Create a song object for the playlist for direct MP3s
-            const newSong = {
-                id: 'mp3-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9), // Unique ID
-                title: mp3Url.split('/').pop() || 'Direct MP3', // Use filename from URL as title
-                artist: 'Unknown Artist',
-                albumArtSrc: 'https://placehold.co/128x128/CCCCCC/FFFFFF?text=MP3', // Generic MP3 thumbnail
-                url: mp3Url, // This is the direct streaming URL
-                duration: 0, // Duration will be known once loaded by player
-                type: 'audio' // Indicate this is a direct audio file
-            };
-            addSongToCurrentPlaylist(newSong);
-            directMp3UrlInput.value = ''; // Clear input
-        });
 
         // --- Random Playback for Hosted MP3s ---
         // Function to fetch all hosted songs from the manifest initially
         async function fetchAllHostedSongsForRandomPlayback() {
+            if (fullHostedSongsList.length > 0) return; // Only fetch once
+
             showMessage("Preparing random song pool from hosted MP3s...", 0); // Persistent message
             showLoading();
             try {
                 // Fetch the hosted_songs_manifest.json via the backend proxy
-                const response = await fetch(`${FLASK_BACKEND_URL}/hosted_songs_manifest`);
+                // Note: You need a Flask route '/hosted_songs_manifest' that serves this file.
+                // Assuming it's accessible at the backend URL.
+                const response = await fetch(`${FLASK_BACKEND_URL}/hosted_songs_manifest.json`); // Updated to fetch manifest.json
                 const data = await response.json();
                 hideLoading();
 
@@ -2264,6 +2272,7 @@
                         type: 'audio',
                         url: item.url
                     }));
+                    console.log(`Loaded ${fullHostedSongsList.length} songs for random playback.`);
                     showMessage(`Prepared ${fullHostedSongsList.length} hosted songs for random playback.`, 3000);
                 } else if (response.ok && data.length === 0) {
                     showMessage("No hosted MP3s found in the manifest for random playback.", 5000);
@@ -2287,31 +2296,35 @@
                 return;
             }
 
+            // Ensure full list is populated first
+            if (fullHostedSongsList.length === 0) {
+                await fetchAllHostedSongsForRandomPlayback(); 
+                if (fullHostedSongsList.length === 0) {
+                    showMessage("No hosted songs available to start random playback.", 5000);
+                    resetPlayerUI();
+                    isPlayingRandomHostedMode = false;
+                    return;
+                }
+            }
+            
             isPlayingRandomHostedMode = true;
-            playlist.length = 0; // Clear existing local playlist
-
-            if (fullHostedSongsList.length === 0) {
-                await fetchAllHostedSongsForRandomPlayback(); // Ensure full list is populated
-            }
-
-            if (fullHostedSongsList.length === 0) {
-                showMessage("No hosted songs available to start random playback.", 5000);
-                resetPlayerUI();
-                isPlayingRandomHostedMode = false;
-                return;
-            }
+            playlist.length = 0; // Clear existing local playlist for new random queue
 
             // Populate initial queue
             const initialQueueSize = Math.min(RANDOM_QUEUE_SIZE, fullHostedSongsList.length);
             for (let i = 0; i < initialQueueSize; i++) {
-                const newSong = getUniqueRandomHostedSong();
+                const newSong = getUniqueRandomHostedSong(); // This will ensure uniqueness for the initial fill
                 if (newSong) {
                     playlist.push(newSong);
                 } else {
-                    break; // Stop if no unique songs are left
+                    break; // Stop if no unique songs are left (shouldn't happen with proper unique check)
                 }
             }
-            shuffleArray(playlist); // Shuffle the initial queue
+            // Shuffle the initial queue if it's the first time or if all songs are unique
+            if (playlist.length > 1 && playlist.length <= fullHostedSongsList.length) { // Only shuffle if there are multiple unique songs
+                shuffleArray(playlist); 
+            }
+            
 
             renderPlaylist();
             if (playlist.length > 0) {
@@ -2430,7 +2443,8 @@
             audioPlayer.volume = volumeBar.value / 100;
 
             // Hide all modals and dropdowns initially
-            addSongModal.classList.add('hidden'); // The consolidated modal
+            hostedMp3SearchModal.classList.add('hidden'); // The consolidated modal
+            youtubeSearchModal.classList.add('hidden'); // New YouTube modal
             managePlaylistModal.classList.add('hidden');
             createJamModal.classList.add('hidden');
             joinJamModal.classList.add('hidden');
@@ -2444,11 +2458,13 @@
                 // The actual jam name will be fetched in openJoinJamModal
                 await openJoinJamModal(urlJamId, `Session ${urlJamId}`);
             } else {
-                showMessage("Welcome! Use 'Add Songs' or the 3 dots menu to begin.", 3000); // Updated welcome message
+                showMessage("Welcome! Use 'Add Songs (MP3)' or the 3 dots menu to begin.", 3000); // Updated welcome message
                 trackTitle.textContent = "No song loaded";
                 artistName.textContent = "";
                 albumArt.src = "https://placehold.co/128x128/CCCCCC/FFFFFF?text=No+Track";
             }
+            // Pre-fetch hosted songs for random playback in the background
+            fetchAllHostedSongsForRandomPlayback();
         }
 
         // Call initial load logic only after Firebase auth is ready (handled by onAuthStateChanged)

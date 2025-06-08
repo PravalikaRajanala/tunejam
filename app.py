@@ -20,8 +20,12 @@ import datetime # For session cookie expiration
 
 # Initialize Flask app, telling it to look for templates in the current directory (root)
 app = Flask(__name__, template_folder='.')
-CORS(app, supports_credentials=True) # Enable CORS and support credentials (for cookies)
-app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'your_super_secret_flask_key') # Crucial for session management
+
+# Enable CORS and support credentials (for cookies)
+CORS(app, supports_credentials=True)
+
+# Generate a secure random secret key if environment variable is missing
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32)) 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 

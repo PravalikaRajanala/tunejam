@@ -18,29 +18,38 @@ from firebase_admin import credentials, firestore, auth
 from functools import wraps
 import datetime # For session cookie expiration
 from flask_caching import Cache # Import Flask-Caching
+import secrets # Import secrets for generating a secure key
 
 # Initialize Flask app, telling it to look for templates in the current directory (root)
 app = Flask(__name__, template_folder='.')
 CORS(app, supports_credentials=True) # Enable CORS and support credentials (for cookies)
-app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY') # Retrieve from environment variable
 
-# IMPORTANT: Ensure FLASK_SECRET_KEY is set as an environment variable in your Vercel deployment.
+# --- CONFIGURATION: Flask Secret Key ---
+# IMPORTANT: For production, always set FLASK_SECRET_KEY as an environment variable (e.g., on Vercel).
 # This key is crucial for Flask's session management, which Socket.IO might implicitly rely on
 # for secure communication and internal operations. If not set, Flask sessions will not be secure.
-if not app.config['SECRET_KEY']:
-    logging.warning("FLASK_SECRET_KEY environment variable is not set. Flask sessions will not be secure, "
-                    "and Socket.IO may encounter issues. Please set this in your Vercel project settings or local environment.")
-    # For local development or quick testing, a fallback can be used, but NOT for production:
-    # app.config['SECRET_KEY'] = 'a_very_insecure_default_key_for_testing_only'
+if os.environ.get('FLASK_SECRET_KEY'):
+    app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY')
+    logging.info("Flask SECRET_KEY loaded from environment variable.")
+else:
+    # Generate a secure key for local development if not set, but warn in production
+    app.config['SECRET_KEY'] = secrets.token_hex(32)
+    logging.warning("FLASK_SECRET_KEY environment variable is NOT set. "
+                    "A random key has been generated for this session. "
+                    "For production deployments, please set FLASK_SECRET_KEY in your environment variables "
+                    "to ensure session security.")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Configure Cache
-app.config["CACHE_TYPE"] = "simple" # In-memory cache, good for single instance. For distributed, use Redis/Memcached.
-app.config["CACHE_DEFAULT_TIMEOUT"] = 300 # Cache items for 5 minutes (adjust as needed)
-cache = Cache(app)
-logging.info("Flask-Caching initialized.")
+# --- CONFIGURATION: Flask-Caching (Simplified to 'simple' in-memory cache) ---
+# As you're not using Redis, we will configure Flask-Caching to use the 'simple' in-memory cache.
+# This cache stores data in the Flask application's process memory.
+# It's good for single-instance deployments or development but won't share cache across multiple instances.
+app.config["CACHE_TYPE"] = "simple"
+app.config["CACHE_DEFAULT_TIMEOUT"] = 3600 # Cache items for 1 hour (3600 seconds) by default
+logging.info("Flask-Caching configured with 'simple' in-memory cache.")
 
+cache = Cache(app) # Initialize the cache after configuration
 
 # Explicitly pass the Flask app to SocketIO and set async_mode
 # Using 'eventlet' as async_mode, as it's monkey-patched. This helps ensure proper async behavior.
@@ -48,9 +57,10 @@ socketio = SocketIO(app, cors_allowed_origins="*", manage_session=False, async_m
 
 logging.info("Flask app and SocketIO initialized.")
 
-# Define the directory for downloaded audio files (for YouTube downloads via Flask)
-# On Vercel, this directory is ephemeral and writable. Files downloaded here will not persist
-# between requests or deployments.
+# --- Ephemeral Directory for Downloads ---
+# On serverless platforms like Vercel, this directory is ephemeral.
+# Files downloaded here will NOT persist between requests or deployments.
+# For persistent storage of downloaded audio, use a cloud storage service (e.g., Firebase Storage, AWS S3).
 DOWNLOAD_DIR = tempfile.mkdtemp() # Correctly uses a writable temporary directory
 logging.info(f"Using temporary directory for downloads: {DOWNLOAD_DIR}")
 
@@ -62,32 +72,40 @@ try:
     firebase_credentials_json = os.environ.get('FIREBASE_ADMIN_CREDENTIALS_JSON')
 
     if firebase_credentials_json:
-        # Load credentials from environment variable
-        cred_dict = json.loads(firebase_credentials_json)
-        cred = credentials.Certificate(cred_dict)
-        if not firebase_admin._apps: # Initialize Firebase Admin SDK only once per process
-            firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        firebase_auth = auth
-        logging.info("Firebase Admin SDK initialized successfully from environment variable.")
+        try:
+            # Load credentials from environment variable
+            cred_dict = json.loads(firebase_credentials_json)
+            cred = credentials.Certificate(cred_dict)
+            if not firebase_admin._apps: # Initialize Firebase Admin SDK only once per process
+                firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            firebase_auth = auth
+            logging.info("Firebase Admin SDK initialized successfully from environment variable.")
+        except json.JSONDecodeError as e:
+            logging.error(f"Error decoding FIREBASE_ADMIN_CREDENTIALS_JSON: {e}")
+        except Exception as e:
+            logging.error(f"Error initializing Firebase Admin SDK from environment variable: {e}")
     else:
         # Fallback for local development if environment variable is not set
         FIREBASE_ADMIN_KEY_FILE_LOCAL = 'firebase_admin_key.json' # Adjust path for local testing
         if os.path.exists(FIREBASE_ADMIN_KEY_FILE_LOCAL):
-            if not firebase_admin._apps: # Initialize Firebase Admin SDK only once per process
-                cred = credentials.Certificate(FIREBASE_ADMIN_KEY_FILE_LOCAL)
-                firebase_admin.initialize_app(cred)
-            db = firestore.client()
-            firebase_auth = auth
-            logging.info("Firebase Admin SDK initialized successfully from local file (for development).")
+            try:
+                if not firebase_admin._apps: # Initialize Firebase Admin SDK only once per process
+                    cred = credentials.Certificate(FIREBASE_ADMIN_KEY_FILE_LOCAL)
+                    firebase_admin.initialize_app(cred)
+                db = firestore.client()
+                firebase_auth = auth
+                logging.info("Firebase Admin SDK initialized successfully from local file (for development).")
+            except Exception as e:
+                logging.error(f"Error initializing Firebase Admin SDK from local file: {e}")
         else:
             logging.error("Firebase Admin SDK credentials not found. Set 'FIREBASE_ADMIN_CREDENTIALS_JSON' "
                           "environment variable on Vercel or provide 'firebase_admin_key.json' for local development. "
                           "Jam Session and Authentication features will not work.")
             db = None # Ensure db is None if initialization fails
             firebase_auth = None
-except Exception as e:
-    logging.error(f"Error initializing Firebase Admin SDK: {e}")
+except Exception as e: # Catch any unexpected errors during the entire Firebase setup block
+    logging.error(f"An unexpected error occurred during Firebase Admin SDK setup: {e}")
     db = None
     firebase_auth = None
 
@@ -192,7 +210,7 @@ def register():
     experience_level = request.json.get('experience_level')
 
     if not id_token or not username:
-        return jsonify({"error": "Missing required registration data (id_token or username)."}), 400
+        return jsonify({"error": "Missing required registration data (id_token or username)."})), 400
 
     try:
         # Verify the ID token to get the UID
@@ -617,6 +635,15 @@ def search_hosted_mp3s():
     return jsonify(filtered_songs)
 
 # --- SocketIO Event Handlers ---
+# Dictionaries to keep track of active jam sessions and SIDs.
+# In a multi-instance Vercel environment, these local dictionaries will not be synchronized
+# across instances. Firestore is the source of truth for jam session state.
+# These local caches are primarily for quick lookups within the scope of a single Flask instance
+# and for managing the host_sid to know which socket controls the session state.
+jam_sessions = {} # {jam_id: {host_sid: '...', participants: {sid: 'nickname'}, ...}}
+sids_in_jams = {} # {sid: {jam_id: '...', nickname: '...'}}
+
+
 @socketio.on('connect')
 def handle_connect():
     logging.info(f"Socket.IO Client connected: {request.sid}")

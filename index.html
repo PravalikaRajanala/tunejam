@@ -334,7 +334,6 @@
             <input type="range" id="volume-bar" value="100" min="0" max="100" class="flex-grow h-2 rounded-lg appearance-none cursor-pointer bg-gray-200">
             <i class="fas fa-volume-up text-gray-600 text-base"></i>
         </div>
-        <!-- Removed "Play Random Telugu Songs" button as Google Drive is removed -->
     </div>
 
     <div class="playlist-card bg-white shadow-xl rounded-2xl p-6 md:p-8 w-full max-w-sm border border-gray-100">
@@ -377,17 +376,16 @@
             <button id="manage-playlist-button" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg shadow hover:bg-gray-300 transition-colors duration-200 text-sm">
                 <i class="fas fa-edit mr-2"></i>Manage Playlist
             </button>
+            <button id="play-random-hosted-songs-button" class="px-4 py-2 bg-purple-600 text-white rounded-lg shadow hover:bg-purple-700 transition-colors duration-200 text-sm">
+                <i class="fas fa-random mr-2"></i>Play Random Songs
+            </button>
         </div>
-
-        <!-- Removed Google Drive Search Section -->
-        <!-- Removed "YouTube Options" section from here, as it's now in the modal -->
 
         <ul id="playlist-container" class="space-y-3 max-h-80 overflow-y-auto pr-2 mt-6 border-t border-gray-200 pt-6">
         </ul>
     </div>
 
     <!-- Add Song Modal (Consolidated: YouTube, Hosted MP3 Search, Direct MP3 URL) -->
-    <!-- Renamed from Youtube-modal to add-song-modal for clarity -->
     <div id="add-song-modal" class="modal-overlay hidden">
         <div class="modal-content">
             <button class="modal-close-button" onclick="closeAddSongModal()">×</button>
@@ -530,8 +528,6 @@
 
 
         const FLASK_BACKEND_URL = ''; // Leave empty if running on the same domain/port
-        // Removed: YOUTUBE_API_KEY as it's now handled by the backend proxy
-        // Removed: PUBLIC_TELUGU_SONGS_FOLDER_ID as Google Drive is removed
 
         // IMPORTANT: This is the base URL for your Netlify-hosted songs!
         const BASE_HOSTED_MP3_CDN_URL = "https://vermillion-raindrop-7966d4.netlify.app"; // <--- CONFIGURE THIS URL
@@ -550,10 +546,10 @@
         let youtubePlayer;
         let youtubePlayerReady = false;
 
-        // --- Removed Random Playback Google Drive related state ---
-        // let isPlayingRandomDriveMode = false;
-        // let fullDriveSongsList = []; 
-        // const RANDOM_QUEUE_SIZE = 5; 
+        // --- NEW GLOBAL STATE FOR RANDOM PLAYBACK (for hosted MP3s) ---
+        let isPlayingRandomHostedMode = false;
+        let fullHostedSongsList = []; // Stores all fetched songs from hosted_songs_manifest.json
+        const RANDOM_QUEUE_SIZE = 5; // Desired number of songs in the dynamic random queue
 
         // --- DOM Elements ---
         const audioPlayer = document.getElementById('audio-player');
@@ -575,10 +571,10 @@
 
         // Buttons and Dropdowns
         const showAddOptionsButton = document.getElementById('show-add-options-button'); // "Add Songs" button
-        const addOptionsContainer = document.getElementById('add-options-container'); // Container that "Add Songs" button toggles (will be removed as a search container)
-        const addSongButton = document.getElementById('add-song-button'); // "YouTube (Beta)" button inside add-options-container
+        // Removed: const addOptionsContainer = document.getElementById('add-options-container'); // This element is no longer in HTML
+        // Removed: const addSongButton = document.getElementById('add-song-button'); // This element is no longer in HTML
         const managePlaylistButton = document.getElementById('manage-playlist-button');
-        // Removed: playRandomDriveSongsButton
+        const playRandomHostedSongsButton = document.getElementById('play-random-hosted-songs-button'); // New random play button
 
         // RE-ADDED: Three Dots dropdown elements
         const openOptionsDropdownButton = document.getElementById('open-options-dropdown-button'); // Three dots button
@@ -588,7 +584,7 @@
         const joinJamSessionDropdownBtn = document.getElementById('join-jam-session-dropdown-btn'); // "Join Jam Session" in dropdown
 
         // Modals
-        const addSongModal = document.getElementById('add-song-modal'); // CONSOLIDATED modal (formerly Youtube-modal)
+        const addSongModal = document.getElementById('add-song-modal'); // CONSOLIDATED modal
         const managePlaylistModal = document.getElementById('manage-playlist-modal');
         // RE-ADDED: Jam session modals
         const createJamModal = document.getElementById('create-jam-modal');
@@ -600,14 +596,12 @@
         const addFromUrlButton = document.getElementById('add-from-url-button');
         const youtubeTextSearchInput = document.getElementById('youtube-text-search-input');
         const performYoutubeTextSearchButton = document.getElementById('perform-youtube-text-search');
-        const youtubeSearchResults = document.getElementById('youtube-search-results'); // Renamed from Youtube-results
-        const hostedMp3SearchInput = document.getElementById('hosted-mp3-search-input'); // NEW
-        const performHostedMp3SearchButton = document.getElementById('perform-hosted-mp3-search'); // NEW
-        const hostedMp3SearchResults = document.getElementById('hosted-mp3-search-results'); // NEW
+        const youtubeSearchResults = document.getElementById('youtube-search-results');
+        const hostedMp3SearchInput = document.getElementById('hosted-mp3-search-input');
+        const performHostedMp3SearchButton = document.getElementById('perform-hosted-mp3-search');
+        const hostedMp3SearchResults = document.getElementById('hosted-mp3-search-results');
         const directMp3UrlInput = document.getElementById('direct-mp3-url-input');
         const addDirectMp3Button = document.getElementById('add-direct-mp3-button');
-
-        // Removed: Google Drive elements (googledriveMainSearchInput, performGoogledriveMainSearchButton, googledriveMainSearchResults)
 
         const editablePlaylistContainer = document.getElementById('editable-playlist-container');
         const playlistEmptyMessage = document.getElementById('playlist-empty-message');
@@ -669,7 +663,13 @@
             return `${minutes}:${remainingSeconds < 10 ? '0' : ''}${remainingSeconds}`;
         }
 
-        // Removed: shuffleArray, getUniqueRandomSongFromFullList related to Google Drive random play
+        // Simple shuffle function for arrays
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]]; // Swap elements
+            }
+        }
 
         function showMessage(message, duration = 3000) {
             const msgBox = document.getElementById('custom-message-box');
@@ -927,14 +927,37 @@
                 return;
             }
 
-            // Normal sequential playback logic
-            let nextIndex = currentTrackIndex + 1;
-            if (nextIndex >= activePlaylist.length) {
-                nextIndex = 0; // Loop back to the beginning
+            if (isPlayingRandomHostedMode) {
+                // Remove the song that just finished from the active playlist (queue)
+                activePlaylist.shift(); 
+                // If a new random song is available from the full list, add it
+                const newRandomSong = getUniqueRandomHostedSong();
+                if (newRandomSong) {
+                    activePlaylist.push(newRandomSong);
+                } else {
+                    showMessage("Ran out of unique hosted songs in the random pool!", 3000);
+                }
+                renderPlaylist(); // Re-render to show updated queue
+                // Play the next song (which is now at index 0)
+                if (activePlaylist.length > 0) {
+                    currentTrackIndex = 0; // Always play the first song in the shuffled queue
+                    loadTrack(0, true);
+                } else {
+                    // If queue becomes empty (e.g., ran out of unique songs)
+                    showMessage("Random playlist exhausted. Please add more songs or switch modes.", 5000);
+                    resetPlayerUI();
+                }
+            } else {
+                // Normal sequential playback logic
+                let nextIndex = currentTrackIndex + 1;
+                if (nextIndex >= activePlaylist.length) {
+                    nextIndex = 0; // Loop back to the beginning
+                }
+
+                currentTrackIndex = nextIndex;
+                loadTrack(currentTrackIndex, true); // Autoplay next track
             }
 
-            currentTrackIndex = nextIndex;
-            loadTrack(currentTrackIndex, true); // Autoplay next track
 
             if (currentJamId && isHost) {
                 // Host updates Firestore with new track index and resets playback time
@@ -942,6 +965,27 @@
             }
             renderPlaylist(); // Update playlist to reflect highlight
         }
+
+        // Helper to get a unique random song from the full hosted songs list
+        function getUniqueRandomHostedSong() {
+            if (fullHostedSongsList.length === 0) {
+                return null;
+            }
+
+            // Filter out songs already in the current playback playlist
+            const availableSongs = fullHostedSongsList.filter(
+                (song) => !playlist.some((qSong) => qSong.id === song.id)
+            );
+
+            if (availableSongs.length === 0) {
+                // If all songs are already in the queue, allow repeats or reset pool
+                console.warn("All unique hosted songs are currently in the queue. Re-using songs.");
+                return fullHostedSongsList[Math.floor(Math.random() * fullHostedSongsList.length)];
+            }
+
+            return availableSongs[Math.floor(Math.random() * availableSongs.length)];
+        }
+
 
         // --- Playback Controls Event Listeners ---
         playPauseButton.addEventListener('click', () => {
@@ -1166,8 +1210,15 @@
                 showMessage("Only the host can control playback in a Jam Session.", 3000);
                 return;
             }
-
-            playNextTrack(); // This handles next track logic.
+            
+            // If in random mode, skipping should also remove the current song
+            // and add a new random one, effectively acting like a "next completed" event.
+            // This ensures the random queue logic is maintained.
+            if (isPlayingRandomHostedMode) {
+                playNextTrack(); // This will handle removing the current song and adding a new random one
+            } else {
+                playNextTrack(); // This handles next track logic for sequential.
+            }
         });
 
         // --- Playlist Management Functions ---
@@ -1194,6 +1245,10 @@
                     if (currentJamId && !isHost) {
                         showMessage("Only the host can select songs in a Jam Session.", 3000);
                         return;
+                    }
+                    if (isPlayingRandomHostedMode) {
+                        isPlayingRandomHostedMode = false; // Disable random mode if a song is explicitly selected
+                        showMessage("Random play mode disabled. Playing selected song.", 3000);
                     }
                     loadTrack(index);
                     if (currentJamId && isHost) {
@@ -1263,6 +1318,18 @@
                     try {
                         // Emit to backend, which updates Firestore
                         socket.emit('remove_song_from_jam', { jam_id: currentJamId, song_id: songId });
+                        // Adjust currentTrackIndex if the removed song was before the current song
+                        if (currentTrackIndex === indexToRemove) {
+                            if (activePlaylist.length > 0) {
+                                updateFirestorePlaybackState(true, Math.min(indexToRemove, activePlaylist.length - 1), 0);
+                            } else {
+                                // If playlist is empty, send reset state
+                                updateFirestorePlaybackState(false, 0, 0);
+                            }
+                        } else if (currentTrackIndex > indexToRemove) {
+                            currentTrackIndex--;
+                            updateFirestorePlaybackState(null, currentTrackIndex); // Only update index, keep other states
+                        }
                     } catch (e) {
                         console.error("Error sending remove song request to backend:", e);
                         showMessage("Error removing song from jam session. Please try again.", 3000);
@@ -1545,6 +1612,11 @@
                 showMessage("Only the host can add songs in a Jam Session.", 3000);
                 return;
             } else {
+                // If in random mode, disable it when adding a specific song
+                if (isPlayingRandomHostedMode) {
+                    isPlayingRandomHostedMode = false;
+                    showMessage("Random play mode disabled. Adding song to playlist.", 3000);
+                }
                 // Local playlist update
                 playlist.push(song);
                 renderPlaylist(); // Re-render the main local playlist
@@ -1557,7 +1629,7 @@
         function enableHostControls(enable) {
             const buttons = [
                 playPauseButton, rewindButton, forwardButton, nextButton,
-                managePlaylistButton, showAddOptionsButton // Re-included Add Songs button here
+                managePlaylistButton, showAddOptionsButton, playRandomHostedSongsButton // Re-included Add Songs & Random Play button here
             ];
             buttons.forEach(btn => {
                 if (btn) {
@@ -1588,7 +1660,6 @@
             if (!enable) {
                 progressBar.style.pointerEvents = 'none';
                 volumeBar.style.pointerEvents = 'none';
-                // Removed Google Drive specific inputs
                 youtubeUrlInputModal.disabled = true;
                 addFromUrlButton.disabled = true;
                 youtubeTextSearchInput.disabled = true;
@@ -1829,9 +1900,7 @@
         showAddOptionsButton.addEventListener('click', () => {
             console.log("Add Songs button clicked, opening consolidated modal.");
             openAddSongModal(); // Directly open the new modal
-            // Ensure other main dropdown/containers are closed for clean UI
-            optionsDropdown.classList.add('hidden');
-            // addOptionsContainer (Google Drive section) is now gone from HTML
+            optionsDropdown.classList.add('hidden'); // Ensure dropdown is closed
         });
 
         // Three dots button opens the options dropdown (Add Song, Jam Session)
@@ -1951,71 +2020,75 @@
             // Firestore listener will update the state
         });
 
-        // Handle Leave Jam Session button
+        // Function to confirm leaving a jam session (used by leaveJamSessionButton)
+        const confirmLeaveJam = async () => {
+            if (currentJamId && userId) {
+                try {
+                    const jamRef = doc(db, 'jam_sessions', currentJamId);
+                    const jamDoc = await getDoc(jamRef);
+                    if (jamDoc.exists) {
+                        const jamData = jamDoc.data();
+                        const currentParticipants = jamData.participants || {};
+
+                        if (jamData.host_sid === socket.id) { // This is the host leaving
+                            await updateDoc(jamRef, {
+                                is_active: false, // Mark session as inactive
+                                ended_at: new Date()
+                            });
+                            showMessage("You have ended the Jam Session for everyone.", 3000);
+                        } else { // This is a participant leaving
+                            delete currentParticipants[socket.id]; // Remove self from participants map
+                            await updateDoc(jamRef, {
+                                participants: currentParticipants
+                            });
+                            showMessage("You have left the Jam Session.", 3000);
+                        }
+                    }
+                } catch (e) {
+                    console.error("Error leaving jam session:", e);
+                    showMessage("Error leaving jam session. Please try again.", 3000);
+                } finally {
+                    // Reset client-side state regardless of success/failure in Firestore
+                    currentJamId = null;
+                    isHost = false;
+                    myNickname = '';
+                    jamSessionPlaylist = [];
+                    jamSessionParticipants = {};
+                    hideJamSessionUI();
+                    resetPlayerUI();
+                    renderPlaylist(); // Show local playlist
+                    clearInterval(syncInterval); // Stop any host sync interval
+                    if (unsubscribeJamListener) {
+                        unsubscribeJamListener(); // Unsubscribe from Firestore
+                        unsubscribeJamListener = null;
+                    }
+                    window.history.pushState({}, '', `/`); // Remove jam_id from URL
+                }
+            }
+        };
+
+        // Handle Leave Jam Session button (first click shows confirmation, second click confirms)
         leaveJamSessionButton.addEventListener('click', () => {
             showMessage("Are you sure you want to leave the Jam Session? Click again to confirm.", 3000);
-            // This nested function ensures a second click is required to confirm leaving
-            leaveJamSessionButton.onclick = async () => {
-                 if (currentJamId && userId) {
-                    try {
-                        const jamRef = doc(db, 'jam_sessions', currentJamId);
-                        const jamDoc = await getDoc(jamRef);
-                        if (jamDoc.exists) {
-                            const jamData = jamDoc.data();
-                            // Participants are stored as {sid: nickname}
-                            const currentParticipants = jamData.participants || {};
-
-                            if (jamData.host_sid === socket.id) { // This is the host leaving
-                                await updateDoc(jamRef, {
-                                    is_active: false, // Mark session as inactive
-                                    ended_at: new Date()
-                                });
-                                showMessage("You have ended the Jam Session for everyone.", 3000);
-                            } else { // This is a participant leaving
-                                delete currentParticipants[socket.id]; // Remove self from participants map
-                                await updateDoc(jamRef, {
-                                    participants: currentParticipants
-                                });
-                                showMessage("You have left the Jam Session.", 3000);
-                            }
-                        }
-                    } catch (e) {
-                        console.error("Error leaving jam session:", e);
-                        showMessage("Error leaving jam session. Please try again.", 3000);
-                    } finally {
-                        // Reset client-side state regardless of success/failure in Firestore
-                        currentJamId = null;
-                        isHost = false;
-                        myNickname = '';
-                        jamSessionPlaylist = [];
-                        jamSessionParticipants = {};
-                        hideJamSessionUI();
-                        resetPlayerUI();
-                        renderPlaylist(); // Show local playlist
-                        clearInterval(syncInterval); // Stop any host sync interval
-                        if (unsubscribeJamListener) {
-                            unsubscribeJamListener(); // Unsubscribe from Firestore
-                            unsubscribeJamListener = null;
-                        }
-                        window.history.pushState({}, '', `/`); // Remove jam_id from URL
-                    }
-                }
-                // Reset the button's click handler back to original behavior after confirmation
-                leaveJamSessionButton.onclick = confirmLeaveJam; // Set to the confirmation logic
-            };
-            // Store the confirmation logic to be called on the second click
-            const confirmLeaveJam = leaveJamSessionButton.onclick; 
+            // Re-assign the click listener for confirmation
+            leaveJamSessionButton.onclick = confirmLeaveJam;
+            // Set a timeout to revert the listener if no second click
+            setTimeout(() => {
+                leaveJamSessionButton.onclick = () => { // Reset to original behavior
+                    leaveJamSessionButton.removeEventListener('click', confirmLeaveJam); // Remove temporary listener
+                    leaveJamSessionButton.addEventListener('click', () => { // Add back original behavior
+                        showMessage("Are you sure you want to leave the Jam Session? Click again to confirm.", 3000);
+                        leaveJamSessionButton.onclick = confirmLeaveJam;
+                    });
+                };
+            }, 3500); // Give user 3.5 seconds to click again
         });
 
 
         // Existing Manage Playlist button listeners
         managePlaylistButton.addEventListener('click', openManagePlaylistModal);
 
-        // Removed: Google Drive search listeners (performGoogledriveMainSearchButton and associated functions)
-        // Removed: playRandomDriveSongsButton listener
-
         // --- YouTube "Add by URL" within consolidated modal ---
-        // Original: addFromUrlButton.addEventListener('click', handleYoutubeUrlAdd);
         addFromUrlButton.addEventListener('click', async () => {
             const url = youtubeUrlInputModal.value.trim();
             if (!url) { showMessage("Please enter a YouTube URL.", 2000); return; }
@@ -2028,7 +2101,6 @@
         });
 
         // --- YouTube "Search by Name" within consolidated modal ---
-        // Original: performYoutubeTextSearchButton.addEventListener('click', handleYoutubeTextSearch);
         performYoutubeTextSearchButton.addEventListener('click', async () => {
             const query = youtubeTextSearchInput.value.trim();
             if (!query) { showMessage("Please enter a search query.", 2000); return; }
@@ -2070,6 +2142,89 @@
             addSongToCurrentPlaylist(newSong);
             directMp3UrlInput.value = ''; // Clear input
         });
+
+        // --- Random Playback for Hosted MP3s ---
+        // Function to fetch all hosted songs from the manifest initially
+        async function fetchAllHostedSongsForRandomPlayback() {
+            showMessage("Preparing random song pool from hosted MP3s...", 0); // Persistent message
+            showLoading();
+            try {
+                // Fetch the hosted_songs_manifest.json via the backend proxy
+                const response = await fetch(`${FLASK_BACKEND_URL}/hosted_songs_manifest`);
+                const data = await response.json();
+                hideLoading();
+
+                if (response.ok && data.length > 0) {
+                    fullHostedSongsList = data.map(item => ({
+                        id: item.id || item.url, // Ensure unique ID
+                        title: item.title,
+                        artist: item.artist,
+                        albumArtSrc: item.thumbnail || 'https://placehold.co/128x128/CCCCCC/FFFFFF?text=MP3',
+                        duration: item.duration || 0,
+                        type: 'audio',
+                        url: item.url
+                    }));
+                    showMessage(`Prepared ${fullHostedSongsList.length} hosted songs for random playback.`, 3000);
+                } else if (response.ok && data.length === 0) {
+                    showMessage("No hosted MP3s found in the manifest for random playback.", 5000);
+                    fullHostedSongsList = [];
+                } else {
+                    showMessage(`Error preparing random hosted MP3s: ${data.error || 'Unknown error'}`, 5000);
+                    fullHostedSongsList = [];
+                }
+            } catch (error) {
+                hideLoading();
+                console.error("Network error fetching hosted songs manifest:", error);
+                showMessage(`Network error: ${error.message}. Cannot prepare random songs.`, 6000);
+                fullHostedSongsList = [];
+            }
+        }
+
+        // Function to start dynamic random playback from hosted songs
+        playRandomHostedSongsButton.addEventListener('click', async () => {
+            if (currentJamId) {
+                showMessage("Random playback is not available in Jam Sessions. Only host can control.", 3000);
+                return;
+            }
+
+            isPlayingRandomHostedMode = true;
+            playlist.length = 0; // Clear existing local playlist
+
+            if (fullHostedSongsList.length === 0) {
+                await fetchAllHostedSongsForRandomPlayback(); // Ensure full list is populated
+            }
+
+            if (fullHostedSongsList.length === 0) {
+                showMessage("No hosted songs available to start random playback.", 5000);
+                resetPlayerUI();
+                isPlayingRandomHostedMode = false;
+                return;
+            }
+
+            // Populate initial queue
+            const initialQueueSize = Math.min(RANDOM_QUEUE_SIZE, fullHostedSongsList.length);
+            for (let i = 0; i < initialQueueSize; i++) {
+                const newSong = getUniqueRandomHostedSong();
+                if (newSong) {
+                    playlist.push(newSong);
+                } else {
+                    break; // Stop if no unique songs are left
+                }
+            }
+            shuffleArray(playlist); // Shuffle the initial queue
+
+            renderPlaylist();
+            if (playlist.length > 0) {
+                currentTrackIndex = 0; // Always start from the first song in dynamic queue
+                loadTrack(currentTrackIndex, true);
+                showMessage(`Starting random play with ${playlist.length} songs from your hosted collection!`, 3000);
+            } else {
+                showMessage("Could not populate initial random queue. Try adding songs manually.", 3000);
+                resetPlayerUI();
+                isPlayingRandomHostedMode = false;
+            }
+        });
+
 
         // --- Socket.IO Event Handlers (Client-Side) ---
         socket.on('session_created', (data) => {
@@ -2175,7 +2330,6 @@
             audioPlayer.volume = volumeBar.value / 100;
 
             // Hide all modals and dropdowns initially
-            // Removed: addOptionsContainer, which was for Google Drive search
             addSongModal.classList.add('hidden'); // The consolidated modal
             managePlaylistModal.classList.add('hidden');
             createJamModal.classList.add('hidden');

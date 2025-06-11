@@ -11,22 +11,24 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import { getAuth, createUserWithEmailAndPassword, updateProfile } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
 
     // Firebase configuration - UPDATED TO TUNEJAM PROJECT
-    // For Firebase JS SDK v7.20.0 and later, measurementId is optional
-const firebaseConfig = {
-  apiKey: "AIzaSyATBx_uJIoeRqGSBFtc2nTnf2QpGQbOG_I",
-  authDomain: "tunejam-82a06.firebaseapp.com",
-  projectId: "tunejam-82a06",
-  storageBucket: "tunejam-82a06.firebasestorage.app",
-  messagingSenderId: "570252865241",
-  appId: "1:570252865241:web:d4f5fe11cf93c5c41bd8c8",
-  measurementId: "G-0SHRCG91FW"
-};
+    const firebaseConfig = {
+      apiKey: "AIzaSyATBx_uJIoeRqGSBFtc2nTnf2QpGQbOG_I",
+      authDomain: "tunejam-82a06.firebaseapp.com",
+      projectId: "tunejam-82a06",
+      storageBucket: "tunejam-82a06.firebasestorage.app",
+      messagingSenderId: "570252865241",
+      appId: "1:570252865241:web:d4f5fe11cf93c5c41bd8c8",
+      measurementId: "G-0SHRCG91FW"
+    };
 
     // Initialize Firebase
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
+    const db = getFirestore(app); // Initialize Firestore client-side
 
     // Expose functions to global scope if needed for inline event handlers,
     // though adding event listeners is generally preferred.
@@ -51,10 +53,9 @@ const firebaseConfig = {
     }
 
     /**
-     * Handles the user registration process.
-     * Creates a user with Firebase Authentication, updates their profile,
-     * and then sends the ID token and user data to the backend for Firestore storage.
-     * Includes a loading spinner for visual feedback during the process.
+     * Handles the user registration process directly with Firebase and Firestore.
+     * Creates a user, updates their profile, and stores additional data in Firestore.
+     * Includes a loading spinner for visual feedback.
      */
     async function register() {
       const username = document.getElementById('username').value;
@@ -75,50 +76,32 @@ const firebaseConfig = {
       loadingSpinner.classList.remove('hidden');
 
       try {
-        // Create user with Firebase Authentication
+        // Create user directly with Firebase Authentication (client-side)
         const userCred = await createUserWithEmailAndPassword(auth, email, password);
+        const user = userCred.user;
+
         // Update display name immediately in Firebase Auth profile
-        await updateProfile(userCred.user, { displayName: username });
+        await updateProfile(user, { displayName: username });
 
-        // Get ID token after successful user creation
-        const idToken = await userCred.user.getIdToken();
-
-        // Send user data and ID token to your Flask backend for further processing (e.g., Firestore)
-        // Using relative path, assuming backend is on the same domain
-        const res = await fetch('/register', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            id_token: idToken,
-            username,
-            favorite_artist,
-            favorite_genre,
-            experience_level
-          })
+        // Store additional user data in Firestore (client-side)
+        // This will create a document in 'users' collection with the user's UID
+        await setDoc(doc(db, "users", user.uid), {
+          username: username,
+          email: user.email,
+          favorite_artist: favorite_artist,
+          favorite_genre: favorite_genre,
+          experience_level: experience_level,
+          created_at: new Date() // Use client-side timestamp for simplicity here
         });
 
-        if (res.ok) {
-          showModal("Registration successful! Redirecting to dashboard.");
-          setTimeout(() => {
-            window.location.href = "/dashboard";
-          }, 1500); // Give user time to read the message
-        } else {
-          // Handle non-2xx responses from the server
-          let errorContent;
-          const contentType = res.headers.get("content-type");
-          if (contentType && contentType.includes("application/json")) {
-            errorContent = await res.json();
-            showModal("Registration failed: " + (errorContent.error || "Unknown error"));
-          } else {
-            errorContent = await res.text();
-            console.error("Server responded with non-JSON error for registration:", errorContent);
-            showModal("Registration failed: Server error (Check console for details)");
-          }
-        }
+        console.log("Registration successful! Redirecting to dashboard.");
+        showModal("Registration successful! Redirecting to dashboard.");
+        setTimeout(() => {
+          window.location.href = "/dashboard";
+        }, 1500); // Give user time to read the message
+
       } catch (err) {
-        // This catch block handles network errors or errors thrown directly by Firebase SDK (e.g., email-already-in-use, weak-password)
+        // This catch block handles network errors or errors thrown directly by Firebase SDK
         console.error("Client-side error during registration:", err);
         let errorMessage = "An error occurred during registration.";
         if (err.code === 'auth/email-already-in-use') {

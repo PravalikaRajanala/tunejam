@@ -130,27 +130,33 @@ def login_required(f):
         session_cookie = request.cookies.get('session')
         if not session_cookie:
             logging.info("Login required: No session cookie found. Redirecting to login.")
-            return redirect(url_for('login_page'))
+            # Use make_response to set a cookie directly on the redirect response
+            response = make_response(redirect(url_for('login_page')))
+            # Clear any potentially stale session cookie
+            response.set_cookie('session', '', expires=0, httponly=True, secure=True, samesite='Lax')
+            return response
         try:
             if not firebase_auth:
                 logging.error("Firebase Admin SDK Auth not initialized. Cannot verify session cookie for login_required.")
                 response = make_response(redirect(url_for('login_page')))
-                response.set_cookie('session', '', expires=0) # Clear potentially bad cookie
+                response.set_cookie('session', '', expires=0, httponly=True, secure=True, samesite='Lax')
                 return response
 
             # Verify the session cookie. This will also check if the cookie is revoked.
-            # Check the Firebase documentation for latest recommended duration.
+            # IMPORTANT: This step *does* hit Firebase's servers, contributing to potential latency.
             decoded_claims = firebase_auth.verify_session_cookie(session_cookie, check_revoked=True)
             request.user = decoded_claims # Attach user info to request object
             logging.info(f"User {request.user['uid']} authenticated via session cookie for route access.")
         except auth.InvalidSessionCookieError:
             logging.warning("Invalid or revoked session cookie. Redirecting to login.")
             response = make_response(redirect(url_for('login_page')))
-            response.set_cookie('session', '', expires=0) # Clear invalid cookie
+            response.set_cookie('session', '', expires=0, httponly=True, secure=True, samesite='Lax') # Clear invalid cookie
             return response
         except Exception as e:
             logging.error(f"Error verifying session cookie in login_required decorator: {e}")
-            return redirect(url_for('login_page'))
+            response = make_response(redirect(url_for('login_page')))
+            response.set_cookie('session', '', expires=0, httponly=True, secure=True, samesite='Lax')
+            return response
         return f(*args, **kwargs)
     return decorated_function
 
@@ -166,11 +172,12 @@ def login_page():
 def register_page():
     return render_template('register.html')
 
-# Handles user login POST request from frontend
-@app.route('/login', methods=['POST'])
-def login():
+# Endpoint for frontend to send Firebase ID token after client-side login/register
+# to create and set a server-side session cookie.
+@app.route('/set_session_cookie', methods=['POST'])
+def set_session_cookie():
     if not firebase_auth:
-        logging.error("Firebase Admin SDK Auth not initialized for login route.")
+        logging.error("Firebase Admin SDK Auth not initialized for set_session_cookie route.")
         return jsonify({"error": "Server authentication not ready."}), 500
 
     id_token = request.json.get('id_token')
@@ -179,71 +186,21 @@ def login():
 
     try:
         # Verify the ID token and create a session cookie
-        # Set session expiration to 5 days.
-        expires_in = datetime.timedelta(days=5)
+        expires_in = datetime.timedelta(days=5) # Session expires in 5 days
         session_cookie = firebase_auth.create_session_cookie(id_token, expires_in=expires_in)
 
-        # Create a response and set the session cookie
-        response = make_response(jsonify({"message": "Login successful!"}))
+        response = make_response(jsonify({"message": "Session cookie set successfully!"}))
         # httponly=True, secure=True (for HTTPS), samesite='Lax' (good balance for CSRF protection)
         response.set_cookie('session', session_cookie, httponly=True, secure=True, samesite='Lax', expires=datetime.datetime.now() + expires_in)
-        logging.info(f"User logged in, session cookie set for UID: {firebase_auth.verify_id_token(id_token)['uid']}.")
+        logging.info(f"Session cookie set for UID: {firebase_auth.verify_id_token(id_token)['uid']}.")
         return response
 
     except auth.InvalidIdTokenError:
-        logging.warning("Invalid ID token during login attempt.")
+        logging.warning("Invalid ID token received for session cookie creation.")
         return jsonify({"error": "Invalid ID token."}), 401
     except Exception as e:
-        logging.error(f"Error during login process: {e}")
-        return jsonify({"error": f"Authentication failed: {e}"}), 500
-
-# Handles user registration POST request from frontend
-@app.route('/register', methods=['POST'])
-def register():
-    if not firebase_auth or not db:
-        logging.error("Firebase Admin SDK or Firestore not initialized for register route.")
-        return jsonify({"error": "Server components not ready for registration."}), 500
-
-    id_token = request.json.get('id_token')
-    username = request.json.get('username')
-    favorite_artist = request.json.get('favorite_artist')
-    favorite_genre = request.json.get('favorite_genre')
-    experience_level = request.json.get('experience_level')
-
-    if not id_token or not username:
-        return jsonify({"error": "Missing required registration data (id_token or username)."}), 400
-
-    try:
-        # Verify the ID token to get the UID
-        decoded_token = firebase_auth.verify_id_token(id_token)
-        uid = decoded_token['uid']
-
-        # Store additional user data in Firestore
-        user_ref = db.collection('users').document(uid)
-        user_ref.set({
-            'username': username,
-            'email': decoded_token.get('email'), # Get email from token
-            'favorite_artist': favorite_artist,
-            'favorite_genre': favorite_genre,
-            'experience_level': experience_level,
-            'created_at': firestore.SERVER_TIMESTAMP
-        })
-
-        # Create a session cookie for the newly registered user
-        expires_in = datetime.timedelta(days=5)
-        session_cookie = firebase_auth.create_session_cookie(id_token, expires_in=expires_in)
-
-        response = make_response(jsonify({"message": "Registration successful!"}))
-        response.set_cookie('session', session_cookie, httponly=True, secure=True, samesite='Lax', expires=datetime.datetime.now() + expires_in)
-        logging.info(f"User {uid} registered and session cookie set.")
-        return response
-
-    except auth.InvalidIdTokenError:
-        logging.warning("Invalid ID token during registration attempt.")
-        return jsonify({"error": "Invalid ID token."}), 401
-    except Exception as e:
-        logging.error(f"Error during registration process: {e}")
-        return jsonify({"error": f"Registration failed: {e}"}), 500
+        logging.error(f"Error during session cookie creation: {e}")
+        return jsonify({"error": f"Session cookie creation failed: {e}"}), 500
 
 # Handles user logout
 @app.route('/logout', methods=['POST'])
@@ -765,8 +722,7 @@ def create_session(data):
 @socketio.on('join_session')
 def join_session_handler(data): # Renamed to avoid conflict with Flask route
     if db is None:
-        logging.error("Firestore DB not initialized. Cannot join jam session.")
-        emit('join_failed', {'message': 'Server database not initialized. Cannot join session.'})
+        logging.warning("Firestore DB not initialized. Cannot join jam session.")
         return
 
     jam_id = data.get('jam_id')

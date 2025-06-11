@@ -376,8 +376,8 @@
             <i class="fas fa-volume-up text-gray-600 text-base"></i>
         </div>
         <div class="flex justify-center mt-6">
-            <button id="play-random-drive-songs-button" class="px-4 py-2 bg-purple-600 text-white rounded-lg shadow hover:bg-purple-700 transition-colors duration-200 text-sm">
-                <i class="fas fa-random mr-2"></i>Play Random Telugu Songs
+            <button id="play-random-netlify-songs-button" class="px-4 py-2 bg-purple-600 text-white rounded-lg shadow hover:bg-purple-700 transition-colors duration-200 text-sm">
+                <i class="fas fa-random mr-2"></i>Play Random Netlify Songs
             </button>
         </div>
     </div>
@@ -437,19 +437,6 @@
             </button>
         </div>
 
-        <!-- This container is now always present for Google Drive search within the playlist-card -->
-        <div id="add-options-container" class="w-full hidden mt-4">
-            <h4 class="text-xl font-bold text-gray-700 mb-3 text-center">Google Drive Search</h4>
-            <div class="flex space-x-2 mb-3">
-                <input type="text" id="googledrive-main-search-input" placeholder="Search song in Google Drive folder"
-                       class="flex-grow px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
-                <button id="perform-googledrive-main-search" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors duration-200">
-                    <i class="fas fa-search"></i>
-                </button>
-            </div>
-            <div id="googledrive-main-search-results" class="max-h-60 overflow-y-auto space-y-2 mb-4 custom-scrollbar"></div>
-        </div>
-
         <ul id="playlist-container" class="space-y-3 max-h-80 overflow-y-auto pr-2 mt-6 border-t border-gray-200 pt-6 custom-scrollbar">
         </ul>
     </div>
@@ -482,6 +469,24 @@
                     </button>
                 </div>
                 <div id="youtube-search-results" class="max-h-60 overflow-y-auto space-y-2 custom-scrollbar"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- New: Netlify Local MP3 Search Modal -->
+    <div id="netlify-modal" class="modal hidden">
+        <div class="modal-content">
+            <button class="modal-close-button" onclick="closeNetlifyModal()">×</button>
+            <h3 class="text-2xl font-bold text-gray-800 mb-6 text-center">Add Local/Netlify Songs</h3>
+            <div class="flex space-x-2 mb-3">
+                <input type="text" id="netlify-search-input" placeholder="Search song by title or artist"
+                       class="flex-grow px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                <button id="perform-netlify-search" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors duration-200">
+                    <i class="fas fa-search"></i>
+                </button>
+            </div>
+            <div id="netlify-search-results" class="max-h-60 overflow-y-auto space-y-2 mb-4 custom-scrollbar">
+                <!-- Search results will be rendered here -->
             </div>
         </div>
     </div>
@@ -586,10 +591,8 @@
         const signInWithCustomToken = window.firebaseSignInWithCustomToken;
 
 
-        const FLASK_BACKEND_URL = ''; // Leave empty if running on the same domain/port, or specify 'http://localhost:5000'
-        // IMPORTANT: Replace 'YOUR_TELUGU_SONGS_DRIVE_FOLDER_ID_HERE' with your actual Google Drive Folder ID
-        const PUBLIC_TELUGU_SONGS_FOLDER_ID = '1zBAeBpuMNmnqEGxPJtBn5MS0m8p2SOob'; // Placeholder, user needs to replace
-
+        const FLASK_BACKEND_URL = ''; // Leave empty if running on the same domain/port, or specify 'http://localhost:5000' if your Flask backend is separate and running locally
+        
         // Socket.IO setup (used for direct signaling, complementing Firestore for state)
         const socket = io(FLASK_BACKEND_URL); 
         
@@ -606,8 +609,8 @@
         let youtubePlayer;
         let youtubePlayerReady = false;
 
-        let isPlayingRandomDriveMode = false;
-        let fullDriveSongsList = []; // Stores the full list of Google Drive songs for random playback
+        let isPlayingRandomNetlifyMode = false; // Renamed from isPlayingRandomDriveMode
+        let hostedSongsList = []; // Stores the full list of hosted MP3s from manifest for random playback and search
         const RANDOM_QUEUE_SIZE = 5; // Number of random songs to queue initially
 
 
@@ -631,23 +634,23 @@
 
         // Buttons and Dropdowns (matching selected HTML IDs)
         const addSongsButton = document.getElementById('add-songs-button'); // Main 'Add Songs' button
-        const addOptionsContainer = document.getElementById('add-options-container'); // Google Drive search section
         const openOptionsDropdownButton = document.getElementById('open-options-dropdown-button'); // Three dots button
         const optionsDropdown = document.getElementById('options-dropdown'); // Dropdown menu
         const addYoutubeSongDropdown = document.getElementById('add-youtube-song-dropdown'); // "Add YouTube Song" option
         const createJamSessionDropdownBtn = document.getElementById('create-jam-session-dropdown-btn'); // "Create Jam Session" option
         const joinJamSessionDropdownBtn = document.getElementById('join-jam-session-dropdown-btn'); // "Join Jam Session" option in dropdown
         const managePlaylistButton = document.getElementById('manage-playlist-button');
-        const playRandomDriveSongsButton = document.getElementById('play-random-drive-songs-button');
+        const playRandomNetlifySongsButton = document.getElementById('play-random-netlify-songs-button'); // Renamed ID
 
         // Modals (matching selected HTML IDs)
         const youtubeModal = document.getElementById('youtube-modal');
+        const netlifyModal = document.getElementById('netlify-modal'); // New Netlify Modal
         const managePlaylistModal = document.getElementById('manage-playlist-modal');
 
-        // Elements within Google Drive Search section (matching selected HTML IDs)
-        const googledriveMainSearchInput = document.getElementById('googledrive-main-search-input');
-        const performGoogledriveMainSearchButton = document.getElementById('perform-googledrive-main-search');
-        const googledriveMainSearchResults = document.getElementById('googledrive-main-search-results');
+        // Elements within Netlify Modal (New)
+        const netlifySearchInput = document.getElementById('netlify-search-input');
+        const performNetlifySearchButton = document.getElementById('perform-netlify-search');
+        const netlifySearchResults = document.getElementById('netlify-search-results');
         
         // Elements within YouTube Modal (matching selected HTML IDs)
         const youtubeUrlInputModal = document.getElementById('youtube-url-input-modal');
@@ -730,6 +733,21 @@
                 });
             }
         });
+
+        // --- Hosted Songs Manifest Loading ---
+        async function loadHostedSongsManifest() {
+            try {
+                const response = await fetch('hosted_songs_manifest.json'); // Assumes manifest is in the same directory
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                hostedSongsList = await response.json();
+                console.log("Loaded hosted songs manifest:", hostedSongsList.length, "songs");
+            } catch (error) {
+                console.error("Error loading hosted_songs_manifest.json:", error);
+                showMessage("Failed to load hosted songs manifest. Local MP3 search and random play may not work.", 6000);
+            }
+        }
 
 
         // --- Utility Functions ---
@@ -909,7 +927,7 @@
         // --- Core Player Functions ---
         /**
          * Loads and (optionally) plays a track from the current active playlist.
-         * Handles both audio (MP3/Google Drive) and YouTube video types.
+         * Handles both audio (MP3/Netlify) and YouTube video types.
          * @param {number} index - The index of the track in the active playlist.
          * @param {boolean} autoPlay - Whether to automatically start playing the track.
          */
@@ -951,20 +969,10 @@
 
 
             if (track.type === 'audio') { // For generic audio files (like hosted MP3s)
-                audioPlayer.src = track.audioSrc;
+                audioPlayer.src = track.url; // Use 'url' for hosted audio files
                 audioPlayer.load();
                 if (autoPlay) {
                     audioPlayer.play().catch(e => console.error("Error playing audio (type:audio):", e));
-                    playPauseButton.classList.add('is-playing');
-                }
-                clearInterval(progressInterval);
-                progressInterval = setInterval(updateProgressBar, 1000);
-
-            } else if (track.type === 'googledrive') { // For Google Drive audio files
-                audioPlayer.src = `${FLASK_BACKEND_URL}/proxy_googledrive_audio/${track.fileId}`;
-                audioPlayer.load();
-                if (autoPlay) {
-                    audioPlayer.play().catch(e => console.error("Error playing audio (type:googledrive):", e));
                     playPauseButton.classList.add('is-playing');
                 }
                 clearInterval(progressInterval);
@@ -1001,7 +1009,7 @@
                             type: "audio", // Now it's a local audio file
                             title: track.title,
                             artist: track.artist,
-                            audioSrc: downloadedAudioUrl,
+                            url: downloadedAudioUrl, // Use 'url' for audio source
                             albumArtSrc: track.albumArtSrc,
                             duration: track.duration // Retain duration if available
                         };
@@ -1094,8 +1102,8 @@
             volumeBar.style.setProperty('--volume', `${volumeBar.value}%`);
             // There's only one HTML player (audioPlayer). youtubePlayer uses its own volume.
             // If youtubePlayer exists, also sync its volume for UI consistency.
-            if (youtubePlayerReady && youtubePlayer) {
-                youtubePlayer.setVolume(audioPlayer.volume * 100);
+            if (youtubePlayerReady && youtubePlayer) { // Ensure youtubePlayer exists before setting volume
+                youtubePlayer.setVolume(volumeBar.value); // YouTube Player volume is 0-100
             }
         });
 
@@ -1111,7 +1119,7 @@
             let duration = 0;
             let currentTime = 0;
 
-            if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+            if (currentTrack.type === 'audio') {
                 currentTime = audioPlayer.currentTime;
                 duration = audioPlayer.duration;
             } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
@@ -1144,7 +1152,7 @@
             let mediaDuration = 0;
             let ready = false;
 
-            if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+            if (currentTrack.type === 'audio') {
                 if (audioPlayer.readyState >= 3) { // HAVE_FUTURE_DATA or HAVE_ENOUGH_DATA
                     mediaDuration = audioPlayer.duration;
                     ready = !isNaN(mediaDuration) && isFinite(mediaDuration) && mediaDuration > 0;
@@ -1181,7 +1189,7 @@
             }
 
             let newIsPlaying;
-            if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+            if (currentTrack.type === 'audio') {
                 if (audioPlayer.paused) {
                     audioPlayer.play().catch(e => console.error("Error playing audio:", e));
                     newIsPlaying = true;
@@ -1222,7 +1230,7 @@
             if (!isMediaReadyForSeek()) { return; }
 
             let currentMediaTime = 0;
-            if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+            if (currentTrack.type === 'audio') {
                 currentMediaTime = audioPlayer.currentTime;
                 audioPlayer.currentTime = Math.max(0, currentMediaTime - 10);
             } else if (currentTrack.type === 'youtube' && youtubePlayer && youtubePlayerReady) {
@@ -1247,7 +1255,7 @@
 
             let currentMediaTime = 0;
             let mediaDuration = 0;
-            if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+            if (currentTrack.type === 'audio') {
                 currentMediaTime = audioPlayer.currentTime;
                 mediaDuration = audioPlayer.duration;
                 audioPlayer.currentTime = Math.min(mediaDuration, currentMediaTime + 10);
@@ -1272,7 +1280,7 @@
                 return;
             }
 
-            if (isPlayingRandomDriveMode) {
+            if (isPlayingRandomNetlifyMode) { // Changed to Netlify mode
                 playNextTrack(); // This handles random playlist logic, also updates Firestore
             } else {
                 let nextIndex = currentTrackIndex + 1;
@@ -1296,7 +1304,7 @@
             let player;
             let totalDuration;
 
-            if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+            if (currentTrack.type === 'audio') {
                 player = audioPlayer;
                 totalDuration = audioPlayer.duration;
             } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
@@ -1323,7 +1331,7 @@
             let player;
             let totalDuration;
 
-            if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+            if (currentTrack.type === 'audio') {
                 player = audioPlayer;
                 totalDuration = audioPlayer.duration;
             } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
@@ -1332,7 +1340,7 @@
             } else { return; }
 
             const seekTime = (e.target.value / 100) * totalDuration;
-            if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+            if (currentTrack.type === 'audio') {
                 player.currentTime = seekTime;
             } else {
                 player.seekTo(seekTime, true);
@@ -1346,7 +1354,7 @@
             const volume = volumeBar.value / 100;
             audioPlayer.volume = volume;
             if (youtubePlayerReady && youtubePlayer) { // Ensure youtubePlayer exists before setting volume
-                youtubePlayer.setVolume(volume * 100);
+                youtubePlayer.setVolume(volumeBar.value); // YouTube Player volume is 0-100
             }
             volumeBar.style.setProperty('--volume', `${volumeBar.value}%`);
         });
@@ -1384,8 +1392,8 @@
                         showMessage("You do not have permission to play songs in this jam.", 3000);
                         return;
                     }
-                    if (isPlayingRandomDriveMode) {
-                        isPlayingRandomDriveMode = false;
+                    if (isPlayingRandomNetlifyMode) { // Changed to Netlify mode
+                        isPlayingRandomNetlifyMode = false;
                         showMessage("Random play mode disabled. Playing selected song.", 3000);
                     }
                     loadTrack(index, true); // Play the selected track
@@ -1519,6 +1527,11 @@
             youtubeUrlInputModal.value = ''; // Clear input on open
             youtubeTextSearchInput.value = ''; // Clear input on open
             youtubeSearchResults.innerHTML = ''; // Clear previous results
+            // Ensure other modals are closed
+            closeNetlifyModal();
+            closeManagePlaylistModal();
+            closeCreateJamModal();
+            closeJoinJamModal();
         }
 
         function closeYoutubeModal() {
@@ -1526,10 +1539,32 @@
             youtubeModal.classList.add('hidden');
         }
 
+        function openNetlifyModal() { // New function for Netlify modal
+            console.log("Opening Netlify Modal");
+            netlifyModal.classList.remove('hidden');
+            netlifySearchInput.value = ''; // Clear input on open
+            netlifySearchResults.innerHTML = ''; // Clear previous results
+            // Ensure other modals are closed
+            closeYoutubeModal();
+            closeManagePlaylistModal();
+            closeCreateJamModal();
+            closeJoinJamModal();
+        }
+
+        function closeNetlifyModal() { // New function for Netlify modal
+            console.log("Closing Netlify Modal");
+            netlifyModal.classList.add('hidden');
+        }
+
         function openManagePlaylistModal() {
             console.log("Opening Manage Playlist Modal");
             managePlaylistModal.classList.remove('hidden');
             renderEditablePlaylist(); // Populate editable playlist
+            // Ensure other modals are closed
+            closeYoutubeModal();
+            closeNetlifyModal();
+            closeCreateJamModal();
+            closeJoinJamModal();
         }
 
         function closeManagePlaylistModal() {
@@ -1543,6 +1578,11 @@
             jamNameInput.value = '';
             shareLinkContainer.classList.add('hidden'); // Hide link until created
             jamShareLinkInput.value = '';
+            // Ensure other modals are closed
+            closeYoutubeModal();
+            closeNetlifyModal();
+            closeManagePlaylistModal();
+            closeJoinJamModal();
         }
 
         function closeCreateJamModal() {
@@ -1580,6 +1620,11 @@
                     // Do not close modal automatically
                 }
             }
+            // Ensure other modals are closed
+            closeYoutubeModal();
+            closeNetlifyModal();
+            closeManagePlaylistModal();
+            closeCreateJamModal();
         }
 
         function closeJoinJamModal() {
@@ -1590,6 +1635,7 @@
 
         // --- Expose modal functions to window for inline onclicks ---
         window.closeYoutubeModal = closeYoutubeModal;
+        window.closeNetlifyModal = closeNetlifyModal; // Expose new Netlify modal close
         window.closeManagePlaylistModal = closeManagePlaylistModal;
         window.closeCreateJamModal = closeCreateJamModal;
         window.closeJoinJamModal = closeJoinJamModal;
@@ -1652,25 +1698,45 @@
             }
         }
 
-        // Renders search results from Google Drive (for add-options-container)
-        function renderGoogleDriveSearchResults(results, targetContainer) {
+        /**
+         * Searches local hosted MP3s from the manifest.
+         * @param {string} query - The search query.
+         * @returns {Array} Filtered list of songs.
+         */
+        function searchNetlifyMp3s(query) {
+            if (!hostedSongsList || hostedSongsList.length === 0) {
+                showMessage("No hosted songs loaded. Please check manifest.", 3000);
+                return [];
+            }
+            const lowerCaseQuery = query.toLowerCase();
+            return hostedSongsList.filter(song =>
+                (song.title && song.title.toLowerCase().includes(lowerCaseQuery)) ||
+                (song.artist && song.artist.toLowerCase().includes(lowerCaseQuery))
+            );
+        }
+
+        /**
+         * Renders search results from Netlify hosted MP3s.
+         * @param {Array} results - Array of song objects.
+         * @param {HTMLElement} targetContainer - The DOM element to render results into.
+         */
+        function renderNetlifySearchResults(results, targetContainer) {
             targetContainer.innerHTML = '';
             if (results.length === 0) {
-                targetContainer.innerHTML = '<p class="text-center text-gray-500 py-4">No songs found in this folder matching your query.</p>';
+                targetContainer.innerHTML = '<p class="text-center text-gray-500 py-4">No songs found matching your query.</p>';
                 return;
             }
             results.forEach(song => {
                 const resultItem = document.createElement('div');
                 resultItem.classList.add('flex', 'items-center', 'space-x-3', 'p-2', 'bg-gray-50', 'rounded-lg', 'shadow-sm');
                 const thumb = document.createElement('img');
-                thumb.src = song.albumArtSrc || 'https://placehold.co/40x40/CCCCCC/FFFFFF?text=MP3';
+                thumb.src = song.thumbnail || 'https://placehold.co/40x40/CCCCCC/FFFFFF?text=MP3';
                 thumb.alt = 'Song thumbnail';
                 thumb.classList.add('w-10', 'h-10', 'rounded-md', 'object-cover', 'flex-shrink-0');
                 const textContent = document.createElement('div');
                 textContent.classList.add('flex-grow', 'truncate');
                 textContent.innerHTML = `<span class="font-medium block truncate">${song.title}</span><span class="text-xs text-gray-500 block truncate">${song.artist}</span>`;
                 const addButton = document.createElement('button');
-                // Permission check for adding to playlist (host or has 'add' permission)
                 const canAdd = (!currentJamId || isHost || myPermissions.add);
                 addButton.classList.add('ml-2', 'px-3', 'py-1', 'bg-green-500', 'text-white', 'rounded-md', 'hover:bg-green-600', 'transition-colors', 'duration-200', 'flex-shrink-0', `${!canAdd ? 'opacity-70 cursor-not-allowed' : ''}`);
                 addButton.innerHTML = '<i class="fas fa-plus mr-1"></i>Add';
@@ -1681,11 +1747,13 @@
                         showMessage("You do not have permission to add songs to this jam.", 3000);
                         return;
                     }
-                    if (isPlayingRandomDriveMode) {
-                        isPlayingRandomDriveMode = false;
+                    if (isPlayingRandomNetlifyMode) { // Changed to Netlify mode
+                        isPlayingRandomNetlifyMode = false;
                         showMessage("Random play mode disabled. Adding song to playlist.", 3000);
                     }
                     addSongToCurrentPlaylist(song);
+                    // Optionally close modal after adding a song
+                    closeNetlifyModal(); 
                 });
                 resultItem.appendChild(thumb);
                 resultItem.appendChild(textContent);
@@ -1693,6 +1761,7 @@
                 targetContainer.appendChild(resultItem);
             });
         }
+
 
         // Renders search results from YouTube (for youtube-modal)
         function renderYouTubeSearchResults(results) {
@@ -1723,8 +1792,8 @@
                         showMessage("You do not have permission to add songs to this jam.", 3000);
                         return;
                     }
-                    if (isPlayingRandomDriveMode) { // If currently in random play, adding a specific song means ending random mode
-                        isPlayingRandomDriveMode = false;
+                    if (isPlayingRandomNetlifyMode) { // If currently in random play, adding a specific song means ending random mode
+                        isPlayingRandomNetlifyMode = false;
                         showMessage("Random play mode disabled. Adding search results to playlist.", 3000);
                     }
                     addSongToCurrentPlaylist(video);
@@ -1762,62 +1831,26 @@
             }
         }
 
-        // --- Random Playback Functions (for Google Drive) ---
-        async function fetchAllDriveSongsForRandomPlayback() {
-             if (PUBLIC_TELUGU_SONGS_FOLDER_ID === 'YOUR_TELUGU_SONGS_DRIVE_FOLDER_ID_HERE' || !PUBLIC_TELUGU_SONGS_FOLDER_ID) {
-                console.warn("Google Drive folder ID not configured for random playback.");
-                showMessage("Please configure your Google Drive folder ID in the JavaScript code to play random songs.", 6000);
-                return;
-            }
-            showMessage("Preparing random song pool from Google Drive...", 0);
-            showLoading();
-            try {
-                // Fetch all songs from the specified Google Drive folder
-                const response = await fetch(`${FLASK_BACKEND_URL}/get_all_googledrive_songs/${PUBLIC_TELUGU_SONGS_FOLDER_ID}`);
-                const data = await response.json();
-                hideLoading();
-
-                if (response.ok && data.length > 0) {
-                    fullDriveSongsList = data;
-                    showMessage(`Prepared ${fullDriveSongsList.length} songs for random playback.`, 3000);
-                } else if (response.ok && data.length === 0) {
-                    showMessage("No audio files found in the specified Google Drive folder for random playback.", 5000);
-                    fullDriveSongsList = [];
-                } else {
-                    showMessage(`Error preparing random Google Drive songs: ${data.error || 'Unknown error'}`, 5000);
-                    fullDriveSongsList = [];
-                }
-            } catch (error) {
-                hideLoading();
-                console.error("Network error fetching full Google Drive songs list:", error);
-                showMessage(`Network error: ${error.message}. Cannot prepare random songs.`, 6000);
-                fullDriveSongsList = [];
-            }
-        }
-
-        async function startDynamicRandomPlayback() {
+        // --- Random Playback Functions (for Netlify Hosted MP3s) ---
+        async function startDynamicRandomPlaybackNetlify() { // Renamed function
             if (currentJamId && !isHost && !myPermissions.add) { // Assuming random play adds to playlist, so needs 'add' perm
                 showMessage("You do not have permission to initiate random playback in a Jam Session.", 3000);
                 return;
             }
-            isPlayingRandomDriveMode = true;
+            isPlayingRandomNetlifyMode = true; // Changed to Netlify mode
             const activePlaylist = currentJamId ? jamSessionPlaylist : playlist;
             activePlaylist.length = 0; // Clear existing playlist
 
-            if (fullDriveSongsList.length === 0) {
-                await fetchAllDriveSongsForRandomPlayback();
-            }
-
-            if (fullDriveSongsList.length === 0) {
-                showMessage("No songs available to start random playback.", 5000);
+            if (hostedSongsList.length === 0) {
+                showMessage("No hosted songs available to start random playback. Please load manifest.", 5000);
                 resetPlayerUI();
-                isPlayingRandomDriveMode = false;
+                isPlayingRandomNetlifyMode = false;
                 return;
             }
 
-            const initialQueueSize = Math.min(RANDOM_QUEUE_SIZE, fullDriveSongsList.length);
+            const initialQueueSize = Math.min(RANDOM_QUEUE_SIZE, hostedSongsList.length);
             for (let i = 0; i < initialQueueSize; i++) {
-                const newSong = getUniqueRandomSongFromFullList(); // This also handles adding to the `activePlaylist`
+                const newSong = getUniqueRandomSongFromHostedList(); // This also handles adding to the `activePlaylist`
                 if (newSong) {
                     activePlaylist.push(newSong);
                 } else {
@@ -1850,27 +1883,27 @@
             } else {
                 showMessage("Could not populate initial random queue.", 3000);
                 resetPlayerUI();
-                isPlayingRandomDriveMode = false;
+                isPlayingRandomNetlifyMode = false;
             }
         }
         
         /**
-         * Gets a unique random song from the full Google Drive list that is not currently in the active playlist.
+         * Gets a unique random song from the full hosted list that is not currently in the active playlist.
          * If all unique songs are in the playlist, it will start re-using songs.
          * @returns {Object|null} A random song object or null if no songs are available.
          */
-        function getUniqueRandomSongFromFullList() {
-            if (fullDriveSongsList.length === 0) {
+        function getUniqueRandomSongFromHostedList() { // Renamed function
+            if (hostedSongsList.length === 0) {
                 return null;
             }
             const activePlaylist = currentJamId ? jamSessionPlaylist : playlist;
-            const availableSongs = fullDriveSongsList.filter(
+            const availableSongs = hostedSongsList.filter(
                 (song) => !activePlaylist.some((qSong) => qSong.id === song.id)
             );
 
             if (availableSongs.length === 0) {
                 console.warn("All unique random songs are currently in the queue. Re-using songs.");
-                return fullDriveSongsList[Math.floor(Math.random() * fullDriveSongsList.length)]; // Pick any if no unique left
+                return hostedSongsList[Math.floor(Math.random() * hostedSongsList.length)]; // Pick any if no unique left
             }
             return availableSongs[Math.floor(Math.random() * availableSongs.length)];
         }
@@ -1891,7 +1924,7 @@
                 return;
             }
 
-            if (isPlayingRandomDriveMode) {
+            if (isPlayingRandomNetlifyMode) { // Changed to Netlify mode
                 // In random mode, get a new random song and replace the current one in the queue
                 const currentSongId = activePlaylist[currentTrackIndex]?.id;
                 const indexToRemove = activePlaylist.findIndex(song => song.id === currentSongId);
@@ -1900,7 +1933,7 @@
                     activePlaylist.splice(indexToRemove, 1); // Remove the just played song
                 }
 
-                const newRandomSong = getUniqueRandomSongFromFullList(); // Get one new song
+                const newRandomSong = getUniqueRandomSongFromHostedList(); // Get one new song
                 if (newRandomSong) {
                     activePlaylist.push(newRandomSong);
                 } else {
@@ -1955,25 +1988,27 @@
             }
 
 
-            // Add Songs Button & Google Drive search elements
+            // Add Songs Button (now opens Netlify modal)
             const canAdd = isHostStatus || myPermissions.add;
             if (addSongsButton) {
                 addSongsButton.disabled = !canAdd;
                 if (!canAdd) addSongsButton.classList.add('opacity-70', 'cursor-not-allowed');
                 else addSongsButton.classList.remove('opacity-70', 'cursor-not-allowed');
             }
-            if (googledriveMainSearchInput) googledriveMainSearchInput.disabled = !canAdd;
-            if (performGoogledriveMainSearchButton) {
-                performGoogledriveMainSearchButton.disabled = !canAdd;
-                if (!canAdd) performGoogledriveMainSearchButton.classList.add('opacity-70', 'cursor-not-allowed');
-                else performGoogledriveMainSearchButton.classList.remove('opacity-70', 'cursor-not-allowed');
-            }
             
-            // Random Hosted Songs button
-            if (playRandomDriveSongsButton) {
-                playRandomDriveSongsButton.disabled = !canAdd;
-                if (!canAdd) playRandomDriveSongsButton.classList.add('opacity-70', 'cursor-not-allowed');
-                else playRandomDriveSongsButton.classList.remove('opacity-70', 'cursor-not-allowed');
+            // Netlify Search input and button
+            if (netlifySearchInput) netlifySearchInput.disabled = !canAdd;
+            if (performNetlifySearchButton) {
+                performNetlifySearchButton.disabled = !canAdd;
+                if (!canAdd) performNetlifySearchButton.classList.add('opacity-70', 'cursor-not-allowed');
+                else performNetlifySearchButton.classList.remove('opacity-70', 'cursor-not-allowed');
+            }
+
+            // Random Hosted Songs button (now for Netlify)
+            if (playRandomNetlifySongsButton) { // Renamed ID
+                playRandomNetlifySongsButton.disabled = !canAdd;
+                if (!canAdd) playRandomNetlifySongsButton.classList.add('opacity-70', 'cursor-not-allowed');
+                else playRandomNetlifySongsButton.classList.remove('opacity-70', 'cursor-not-allowed');
             }
 
             // Manage Playlist button (implies remove/add)
@@ -2107,8 +2142,7 @@
                         const currentTrack = jamSessionPlaylist[newTrackIndex];
                         const needsTrackLoad = (newTrackIndex !== currentTrackIndex || 
                                                 (currentTrack && currentTrack.type === 'youtube' && youtubePlayer && youtubePlayer.getVideoData().video_id !== currentTrack.videoId) ||
-                                                (currentTrack && currentTrack.type === 'audio' && audioPlayer.src !== (currentTrack.audioSrc || `${FLASK_BACKEND_URL}/proxy_googledrive_audio/${currentTrack.fileId}`)));
-                        // Handle the case where the track index is valid, but the track data itself implies a different file
+                                                (currentTrack && currentTrack.type === 'audio' && audioPlayer.src !== currentTrack.url)); // Check for 'url' for audio tracks
                         
                         if (needsTrackLoad && newTrackIndex !== undefined && jamSessionPlaylist.length > newTrackIndex) {
                             currentTrackIndex = newTrackIndex; // Update local index
@@ -2122,7 +2156,7 @@
                         if (currentTrack) {
                             let player;
                             let duration;
-                            if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+                            if (currentTrack.type === 'audio') {
                                 player = audioPlayer;
                                 duration = audioPlayer.duration; // Use actual audio element's duration
                             } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
@@ -2135,7 +2169,7 @@
                                 targetTime = Math.min(Math.max(0, targetTime), duration); // Clamp target time within bounds
 
                                 let currentTime = 0;
-                                if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+                                if (currentTrack.type === 'audio') {
                                     currentTime = audioPlayer.currentTime;
                                 } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
                                     currentTime = youtubePlayer.getCurrentTime();
@@ -2144,7 +2178,7 @@
 
                                 if (timeDifference > 1.0 || (newIsPlaying && (player.paused || (currentTrack.type === 'youtube' && player.getPlayerState() !== YT.PlayerState.PLAYING)))) { // Seek if more than 1 second out of sync OR if player is paused but should be playing
                                     console.log(`Follower Syncing: current ${currentTime.toFixed(2)}, target ${targetTime.toFixed(2)}, diff ${timeDifference.toFixed(2)}, delay ${networkDelay.toFixed(2)}`);
-                                    if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+                                    if (currentTrack.type === 'audio') {
                                         player.currentTime = targetTime;
                                     } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
                                         player.seekTo(targetTime, true);
@@ -2153,13 +2187,13 @@
 
                                 // Play/pause state sync
                                 if (newIsPlaying && (player.paused || (currentTrack.type === 'youtube' && player.getPlayerState() !== YT.PlayerState.PLAYING))) {
-                                    if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+                                    if (currentTrack.type === 'audio') {
                                         player.play().catch(e => console.error("Error playing audio (guest):", e));
                                     } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
                                         youtubePlayer.playVideo();
                                     }
                                 } else if (!newIsPlaying && (!player.paused || (currentTrack.type === 'youtube' && player.getPlayerState() === YT.PlayerState.PLAYING))) {
-                                    if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+                                    if (currentTrack.type === 'audio') {
                                         player.pause();
                                     } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
                                         youtubePlayer.pauseVideo();
@@ -2213,7 +2247,7 @@
             let isPlaying = isPlayingOverride !== null ? isPlayingOverride : false;
             let trackIndex = trackIndexOverride !== null ? trackIndexOverride : currentTrackIndex;
 
-            if (currentTrack.type === 'audio' || currentTrack.type === 'googledrive') {
+            if (currentTrack.type === 'audio') {
                 currentTime = playbackTimeOverride !== null ? playbackTimeOverride : audioPlayer.currentTime;
                 isPlaying = isPlayingOverride !== null ? isPlayingOverride : !audioPlayer.paused;
             } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
@@ -2316,25 +2350,17 @@
         }
 
 
-        // --- Event Listeners (matching selected HTML functionality) ---
+        // --- Event Listeners ---
 
-        // "Add Songs" button (toggles Google Drive search section)
+        // "Add Songs" button (now opens Netlify Local MP3 search modal)
         addSongsButton.addEventListener('click', () => {
-            console.log("Add Songs button clicked");
+            console.log("Add Songs button clicked (opening Netlify Modal)");
             // Check for add permission
             if (currentJamId && !isHost && !myPermissions.add) {
                 showMessage("You do not have permission to add songs to this jam.", 3000);
                 return;
             }
-            addOptionsContainer.classList.toggle('hidden'); // Toggle visibility
-            // Clear search results when showing/hiding to prevent stale data
-            googledriveMainSearchInput.value = '';
-            googledriveMainSearchResults.innerHTML = '';
-            // Close other modals if open
-            closeYoutubeModal();
-            closeManagePlaylistModal();
-            closeCreateJamModal();
-            closeJoinJamModal();
+            openNetlifyModal(); // Open the new Netlify modal
             optionsDropdown.classList.add('hidden'); // Ensure dropdown is closed
         });
 
@@ -2343,9 +2369,9 @@
             event.stopPropagation(); // Prevent document click from immediately closing it
             console.log("Three dots button clicked");
             optionsDropdown.classList.toggle('hidden'); // Toggle dropdown visibility
-            // Close other modals and add options if open
-            if (!addOptionsContainer.classList.contains('hidden')) addOptionsContainer.classList.add('hidden');
+            // Close other modals if open
             closeYoutubeModal();
+            closeNetlifyModal(); // Close Netlify modal
             closeManagePlaylistModal();
             closeCreateJamModal();
             closeJoinJamModal();
@@ -2525,19 +2551,19 @@
         // "Manage Playlist" button
         managePlaylistButton.addEventListener('click', openManagePlaylistModal);
 
-        // Google Drive Search (main section)
-        performGoogledriveMainSearchButton.addEventListener('click', async () => {
-            const query = googledriveMainSearchInput.value.trim();
+        // Netlify Modal -> Search by Name
+        performNetlifySearchButton.addEventListener('click', async () => {
+            const query = netlifySearchInput.value.trim();
+            if (!query) { showMessage("Please enter a search query.", 2000); return; }
+
             // Check for add permission
             if (currentJamId && !isHost && !myPermissions.add) {
                 showMessage("You do not have permission to search/add songs to this jam.", 3000);
                 return;
             }
-            if (isPlayingRandomDriveMode) {
-                isPlayingRandomDriveMode = false;
-                showMessage("Random play mode disabled. Adding search results to playlist.", 3000);
-            }
-            await searchSongsInGoogleDriveFolder(PUBLIC_TELUGU_SONGS_FOLDER_ID, query, googledriveMainSearchResults);
+
+            const results = searchNetlifyMp3s(query); // Call the local search function
+            renderNetlifySearchResults(results, netlifySearchResults);
         });
 
         // YouTube Modal -> Add by URL
@@ -2575,18 +2601,18 @@
             renderYouTubeSearchResults(results);
         });
 
-        // "Play Random Telugu Songs" button (from Google Drive)
-        playRandomDriveSongsButton.addEventListener('click', async () => {
+        // "Play Random Netlify Songs" button (Renamed from Play Random Drive Songs)
+        playRandomNetlifySongsButton.addEventListener('click', async () => {
             // Check for add permission
             if (currentJamId && !isHost && !myPermissions.add) {
                 showMessage("You do not have permission to initiate random playback in a Jam Session.", 3000);
                 return;
             }
-            if (PUBLIC_TELUGU_SONGS_FOLDER_ID === 'YOUR_TELUGU_SONGS_DRIVE_FOLDER_ID_HERE' || !PUBLIC_TELUGU_SONGS_FOLDER_ID) {
-                showMessage("Please configure your Google Drive folder ID in the JavaScript code to play random songs.", 6000);
+            if (hostedSongsList.length === 0) {
+                showMessage("No hosted songs available for random playback. Manifest might not be loaded.", 6000);
                 return;
             }
-            await startDynamicRandomPlayback();
+            await startDynamicRandomPlaybackNetlify(); // Call the Netlify specific random play
         });
 
         /**
@@ -2602,7 +2628,7 @@
 
 
             // Hide all modals and dropdowns initially
-            if(addOptionsContainer) addOptionsContainer.classList.add('hidden'); // Google Drive search section
+            if(netlifyModal) netlifyModal.classList.add('hidden'); // New Netlify modal
             if(youtubeModal) youtubeModal.classList.add('hidden');
             if(managePlaylistModal) managePlaylistModal.classList.add('hidden');
             if(createJamModal) createJamModal.classList.add('hidden');
@@ -2624,7 +2650,7 @@
                 const newUrl = window.location.origin + window.location.pathname.replace(`/join/${urlJamId}`, '').split('?')[0];
                 history.replaceState(null, '', newUrl); // Remove query param or path segment
             } else {
-                showMessage("Welcome! Use 'Add Songs' or 'Play Random Telugu Songs'.", 3000);
+                showMessage("Welcome! Use 'Add Songs' or 'Play Random Netlify Songs'.", 3000); // Updated message
                 // Set default track info if no jam is active
                 trackTitle.textContent = "No song loaded";
                 artistName.textContent = "";
@@ -2637,6 +2663,9 @@
         // This function will be called on 'DOMContentLoaded' or after Firebase auth state is known.
         // It's called from onAuthStateChanged to ensure Firebase is ready.
         document.addEventListener('DOMContentLoaded', () => {
+            // Load hosted songs manifest at DOMContentLoaded
+            loadHostedSongsManifest();
+
             // Setup Socket.IO connection as soon as DOM is ready, before Firebase auth might resolve
             // Firebase auth will then call handleInitialLoadAndJamJoin
             socket.on('connect', () => {
@@ -2728,17 +2757,6 @@
                 showMessage(`Permission Denied: ${data.message}`, 4000);
             });
         });
-
-        // This is a placeholder for the `confirm` function to be replaced by `showConfirmation`
-        // It's still present in the selected code, so I'm keeping this warning.
-        // It's commented out in actual usage to avoid overriding native confirm, but kept for context.
-        /*
-        window.confirm = (message) => {
-            console.warn("Using deprecated window.confirm(). Please refactor to showConfirmation.");
-            // Default to true for backward compatibility if not replaced.
-            return true;
-        };
-        */
 
     </script>
 </body>

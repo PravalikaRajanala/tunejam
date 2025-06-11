@@ -54,6 +54,7 @@ const firebaseConfig = {
      * Handles the user registration process.
      * Creates a user with Firebase Authentication, updates their profile,
      * and then sends the ID token and user data to the backend for Firestore storage.
+     * Includes a loading spinner for visual feedback during the process.
      */
     async function register() {
       const username = document.getElementById('username').value;
@@ -62,11 +63,16 @@ const firebaseConfig = {
       const favorite_artist = document.getElementById('favorite_artist').value;
       const favorite_genre = document.getElementById('favorite_genre').value;
       const experience_level = document.getElementById('experience_level').value;
+      const loadingSpinner = document.getElementById('loading-spinner');
+
 
       if (!username || !email || !password) {
         showModal("Please fill in all required fields (Username, Email, Password).");
         return;
       }
+
+      // Show the loading spinner
+      loadingSpinner.classList.remove('hidden');
 
       try {
         // Create user with Firebase Authentication
@@ -115,12 +121,23 @@ const firebaseConfig = {
           errorMessage = err.message;
         }
         showModal("Error: " + errorMessage);
+      } finally {
+        // Hide the loading spinner regardless of success or failure
+        loadingSpinner.classList.add('hidden');
       }
     }
   </script>
   <style>
     body {
       font-family: 'Inter', sans-serif;
+    }
+    /* Simple spinner animation */
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .animate-spin {
+      animation: spin 1s linear infinite;
     }
   </style>
 </head>
@@ -203,6 +220,13 @@ const firebaseConfig = {
       >
         Register
       </button>
+
+      <!-- Loading Spinner -->
+      <div id="loading-spinner" class="hidden text-center mt-4">
+        <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-t-blue-600 border-gray-200"></div>
+        <p class="text-gray-600 mt-2">Registering...</p>
+      </div>
+
     </form>
 
     <p class="text-center text-gray-600 mt-6">

@@ -1,7 +1,47 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, addDoc, serverTimestamp, runTransaction } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, serverTimestamp, runTransaction } from 'firebase/firestore';
+import { FieldValue } from 'firebase/firestore'; // Import FieldValue for delete operation
+
+// Custom Message Box Component
+const CustomMessageBox = ({ message, type, duration, onClose }) => {
+  const [isVisible, setIsVisible] = useState(false);
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    if (message) {
+      setIsVisible(true);
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+      if (duration > 0) {
+        timerRef.current = setTimeout(() => {
+          setIsVisible(false);
+          if (onClose) onClose();
+        }, duration);
+      }
+    } else {
+      setIsVisible(false);
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    }
+  }, [message, duration, onClose]);
+
+  if (!isVisible) return null;
+
+  const bgColor = type === 'error' ? 'bg-red-500' : 'bg-gray-700';
+
+  return (
+    <div
+      className={`fixed bottom-4 left-1/2 -translate-x-1/2 p-3 rounded-lg shadow-lg text-white text-center z-50 transition-opacity duration-300 ${bgColor}`}
+      style={{ opacity: isVisible ? 1 : 0 }}
+    >
+      {message}
+    </div>
+  );
+};
 
 // Main App component
 const App = () => {
@@ -13,10 +53,19 @@ const App = () => {
   const [currentJamId, setCurrentJamId] = useState(null);
   const [userName, setUserName] = useState('');
   const [showNameModal, setShowNameModal] = useState(false);
+  const [appMessage, setAppMessage] = useState('');
+  const [appMessageType, setAppMessageType] = useState('info');
+
+  const showAppMessage = (message, type = 'info', duration = 3000) => {
+    setAppMessage(message);
+    setAppMessageType(type);
+    // The CustomMessageBox component will handle clearing the message based on duration
+  };
 
   // Initialize Firebase and set up auth listener
   useEffect(() => {
     try {
+      // Use Canvas global variables for app_id and firebase_config
       const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
       const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 
@@ -40,6 +89,7 @@ const App = () => {
             console.log('Signed in anonymously:', anonymousUserCredential.user.uid);
           } catch (error) {
             console.error('Error signing in anonymously:', error);
+            showAppMessage(`Authentication failed: ${error.message}. Jam features may not work.`, 'error', 6000);
           }
         }
         setIsAuthReady(true); // Auth state is ready after initial check or sign-in
@@ -48,6 +98,7 @@ const App = () => {
       return () => unsubscribe(); // Cleanup auth listener
     } catch (error) {
       console.error("Failed to initialize Firebase:", error);
+      showAppMessage(`Failed to initialize Firebase: ${error.message}`, 'error', 6000);
       setIsAuthReady(true); // Still set ready to allow UI to render, maybe show an error
     }
   }, []);
@@ -58,8 +109,9 @@ const App = () => {
       const params = new URLSearchParams(window.location.search);
       const jamIdFromUrl = params.get('jamId');
       if (jamIdFromUrl) {
+        // Automatically try to join if jamId is in URL
         setCurrentJamId(jamIdFromUrl);
-        setCurrentView('jam');
+        setShowNameModal(true); // Prompt for name before joining
       }
     }
   }, [isAuthReady, userId]);
@@ -73,15 +125,10 @@ const App = () => {
   const confirmUserName = () => {
     if (userName.trim()) {
       setShowNameModal(false);
-      if (currentJamId) {
-        // Joining existing jam
-        setCurrentView('jam');
-      } else {
-        // Creating new jam
-        setCurrentView('jam');
-      }
+      // Logic for joining/creating jam is handled by the Home/JamSession components
+      // The `currentJamId` being set in handleStartJam will trigger the JamSession view in the return JSX
     } else {
-      alert("Please enter a name to join or create a jam."); // Using alert as a temporary simple message
+      showAppMessage("Please enter a name to join or create a jam.", 'error', 3000); // FIX: Replaced alert
     }
   };
 
@@ -130,6 +177,7 @@ const App = () => {
           setCurrentJamId={setCurrentJamId}
           setCurrentView={setCurrentView}
           onStartJam={handleStartJam}
+          showAppMessage={showAppMessage} // Pass showAppMessage to Home
         />
       )}
 
@@ -142,19 +190,21 @@ const App = () => {
           userName={userName}
           setCurrentView={setCurrentView}
           setCurrentJamId={setCurrentJamId}
+          showAppMessage={showAppMessage} // Pass showAppMessage to JamSession
         />
       )}
+
+      <CustomMessageBox message={appMessage} type={appMessageType} duration={3000} onClose={() => setAppMessage('')} />
     </div>
   );
 };
 
 // Home Component: For creating or joining a jam
-const Home = ({ db, auth, userId, setCurrentJamId, setCurrentView, onStartJam }) => {
+const Home = ({ db, auth, userId, setCurrentJamId, setCurrentView, onStartJam, showAppMessage }) => {
   const [joinInput, setJoinInput] = useState('');
-  const [message, setMessage] = useState('');
 
   const createNewJam = async () => {
-    setMessage('Creating jam...');
+    showAppMessage('Creating jam...');
     try {
       const jamsCollectionRef = collection(db, `artifacts/${typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'}/public/data/jams`);
       const newJamRef = doc(jamsCollectionRef); // Create a new document reference with an auto-generated ID
@@ -174,19 +224,19 @@ const Home = ({ db, auth, userId, setCurrentJamId, setCurrentView, onStartJam })
       const newJamId = newJamRef.id;
       setCurrentJamId(newJamId);
       onStartJam(newJamId); // Pass the new jam ID to the App component to trigger name modal
-      setMessage('');
+      showAppMessage('Jam created successfully!', 'success', 2000);
     } catch (error) {
       console.error('Error creating new jam:', error);
-      setMessage(`Failed to create jam: ${error.message}`);
+      showAppMessage(`Failed to create jam: ${error.message}`, 'error', 4000);
     }
   };
 
   const joinExistingJam = async () => {
     if (!joinInput.trim()) {
-      setMessage('Please enter a Jam ID.');
+      showAppMessage('Please enter a Jam ID.', 'error', 3000);
       return;
     }
-    setMessage('Joining jam...');
+    showAppMessage('Joining jam...');
     try {
       const jamDocRef = doc(db, `artifacts/${typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'}/public/data/jams`, joinInput.trim());
       const jamDocSnap = await getDoc(jamDocRef);
@@ -194,13 +244,13 @@ const Home = ({ db, auth, userId, setCurrentJamId, setCurrentView, onStartJam })
       if (jamDocSnap.exists()) {
         setCurrentJamId(joinInput.trim());
         onStartJam(joinInput.trim()); // Pass the existing jam ID to trigger name modal
-        setMessage('');
+        showAppMessage('Successfully joined jam!', 'success', 2000);
       } else {
-        setMessage('Jam not found. Please check the ID.');
+        showAppMessage('Jam not found. Please check the ID.', 'error', 4000);
       }
     } catch (error) {
       console.error('Error joining jam:', error);
-      setMessage(`Failed to join jam: ${error.message}`);
+      showAppMessage(`Failed to join jam: ${error.message}`, 'error', 4000);
     }
   };
 
@@ -245,13 +295,12 @@ const Home = ({ db, auth, userId, setCurrentJamId, setCurrentView, onStartJam })
           </button>
         </div>
       </div>
-      {message && <p className="mt-6 text-lg font-semibold text-yellow-400">{message}</p>}
     </div>
   );
 };
 
 // Jam Session Component: Handles real-time playback and collaboration
-const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurrentJamId }) => {
+const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurrentJamId, showAppMessage }) => {
   const audioRef = useRef(new Audio());
   const [jamData, setJamData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -260,34 +309,49 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
   const [currentPlaybackTime, setCurrentPlaybackTime] = useState(0); // Local state for immediate UI update
   const [duration, setDuration] = useState(0); // Duration of current song
   const [isPlayingLocally, setIsPlayingLocally] = useState(false); // Local state for play/pause button
+  const [hostedSongsList, setHostedSongsList] = useState([]); // List of songs from hosted_songs_manifest.json
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [showSearchSection, setShowSearchSection] = useState(false);
+
 
   const jamDocRef = doc(db, `artifacts/${typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'}/public/data/jams`, jamId);
   const isHost = jamData && jamData.hostId === userId;
   const canControl = jamData && (isHost || jamData.allPermissions);
 
-  const fetchJamData = useCallback(async () => {
-    try {
-      const docSnap = await getDoc(jamDocRef);
-      if (docSnap.exists()) {
-        setJamData(docSnap.data());
-        // Add current user to the jam's user list if not already present
-        const users = docSnap.data().users || {};
-        if (!users[userId] || users[userId] !== userName) {
-          await updateDoc(jamDocRef, {
-            [`users.${userId}`]: userName,
-          });
+  // Load hosted songs manifest
+  useEffect(() => {
+    const loadHostedSongsManifest = async () => {
+      try {
+        const response = await fetch('hosted_songs_manifest.json');
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
         }
-      } else {
-        setError('Jam session not found or has ended.');
-        setJamData(null);
+        const data = await response.json();
+        setHostedSongsList(data);
+        console.log("Loaded hosted songs manifest:", data.length, "songs");
+      } catch (err) {
+        console.error("Error loading hosted_songs_manifest.json:", err);
+        showAppMessage("Failed to load hosted songs manifest. Search feature may be limited.", 'error', 6000);
       }
-    } catch (err) {
-      console.error('Error fetching jam data:', err);
-      setError('Failed to load jam session.');
-    } finally {
-      setLoading(false);
+    };
+    loadHostedSongsManifest();
+  }, []);
+
+  // Update search results whenever searchTerm or hostedSongsList changes
+  useEffect(() => {
+    if (searchTerm.trim() === '') {
+      setSearchResults([]);
+      return;
     }
-  }, [db, jamId, userId, userName]);
+    const lowerCaseQuery = searchTerm.toLowerCase();
+    const filtered = hostedSongsList.filter(song =>
+      (song.title && song.title.toLowerCase().includes(lowerCaseQuery)) ||
+      (song.artist && song.artist.toLowerCase().includes(lowerCaseQuery))
+    );
+    setSearchResults(filtered);
+  }, [searchTerm, hostedSongsList]);
+
 
   // Set up real-time listener for jam data
   useEffect(() => {
@@ -298,6 +362,15 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
       if (docSnap.exists()) {
         const data = docSnap.data();
         setJamData(data);
+
+        // Add current user to the jam's user list if not already present or name changed
+        const users = data.users || {};
+        if (!users[userId] || users[userId] !== userName) {
+          updateDoc(jamDocRef, {
+            [`users.${userId}`]: userName,
+          }).catch(e => console.error("Error updating user nickname in jam:", e));
+        }
+
         // Sync audio player with Firestore state
         const audio = audioRef.current;
         if (data.currentSong && data.currentSong.url !== audio.src) {
@@ -305,15 +378,18 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
           audio.load();
         }
 
-        // Only seek if the difference is significant to avoid constant seeking
-        // And only if *not* currently seeking by user interaction
         const timeDiff = Math.abs(audio.currentTime - data.currentTime);
-        if (timeDiff > 1 && !audio.seeking && canControl) { // Only force seek if current user is not controlling
+        // Only seek if the difference is significant and current user is not actively seeking
+        // Also, only allow guests to seek, or the host if it's the very first load or a major desync
+        if (timeDiff > 1.5 && !audio.seeking && (!isHost || audio.readyState < 3)) {
           audio.currentTime = data.currentTime;
         }
 
         if (data.isPlaying && !isPlayingLocally) {
-          audio.play().catch(e => console.error("Error playing audio:", e));
+          audio.play().catch(e => {
+            console.error("Error playing audio:", e);
+            showAppMessage("Autoplay prevented or error playing audio. Please interact to play.", 'error', 4000);
+          });
           setIsPlayingLocally(true);
         } else if (!data.isPlaying && isPlayingLocally) {
           audio.pause();
@@ -324,6 +400,9 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
         setError('Jam session not found or has ended. Returning to home.');
         setJamData(null);
         setLoading(false);
+        // Remove user from the URL if jam ends for them
+        const newUrl = window.location.origin + window.location.pathname;
+        window.history.replaceState({}, document.title, newUrl);
         setTimeout(() => {
           setCurrentView('home');
           setCurrentJamId(null);
@@ -333,15 +412,16 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
       console.error('Error listening to jam data:', err);
       setError('Failed to fetch real-time jam updates.');
       setLoading(false);
+      showAppMessage('Lost connection to jam updates. Rejoining might be needed.', 'error', 5000);
     });
 
     return () => unsubscribe(); // Cleanup listener on unmount
-  }, [db, jamId, canControl, isPlayingLocally]);
+  }, [db, jamId, userId, userName, isPlayingLocally, isHost, showAppMessage]);
 
 
   // Handle beforeunload to remove user from jam or delete room if host
   useEffect(() => {
-    const handleBeforeUnload = async () => {
+    const handleBeforeUnload = async (event) => {
       if (!db || !userId || !jamId || !jamData) return;
 
       try {
@@ -352,13 +432,12 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
         } else {
           // If a regular user is leaving, remove them from the users map
           await updateDoc(jamDocRef, {
-            [`users.${userId}`]: deleteDoc.FieldValue.delete(),
+            [`users.${userId}`]: FieldValue.delete(), // FIX: Correctly use FieldValue.delete()
           });
           console.log('User left, removed from jam list.');
         }
       } catch (error) {
-        console.error('Error handling user/host leave:', error);
-        // Errors here might not be visible to the user as the page is closing
+        console.error('Error handling user/host leave on beforeunload:', error);
       }
     };
 
@@ -375,27 +454,28 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
 
     const handlePlay = () => {
       setIsPlayingLocally(true);
-      if (canControl) {
-        updateDoc(jamDocRef, { isPlaying: true });
+      if (isHost) { // Only host updates Firestore state based on their playback
+        updateDoc(jamDocRef, { isPlaying: true, currentTime: audio.currentTime }).catch(console.error);
       }
     };
     const handlePause = () => {
       setIsPlayingLocally(false);
-      if (canControl) {
-        updateDoc(jamDocRef, { isPlaying: false });
+      if (isHost) { // Only host updates Firestore state based on their playback
+        updateDoc(jamDocRef, { isPlaying: false, currentTime: audio.currentTime }).catch(console.error);
       }
     };
     const handleTimeUpdate = () => {
       setCurrentPlaybackTime(audio.currentTime);
-      // Only update Firestore if controlling and significant time difference
-      if (canControl && Math.abs(audio.currentTime - (jamData?.currentTime || 0)) > 1) {
-        updateDoc(jamDocRef, { currentTime: audio.currentTime });
+      // Only host updates Firestore if significant time difference and not actively seeking
+      if (isHost && !audio.seeking && Math.abs(audio.currentTime - (jamData?.currentTime || 0)) > 1.5) {
+        updateDoc(jamDocRef, { currentTime: audio.currentTime }).catch(console.error);
       }
     };
     const handleEnded = async () => {
       setIsPlayingLocally(false);
       if (canControl && jamData && jamData.playlist && jamData.playlist.length > 0) {
-        const nextSongIndex = (jamData.playlist.findIndex(s => s.url === jamData.currentSong?.url) + 1) % jamData.playlist.length;
+        const currentIndex = jamData.playlist.findIndex(s => s.url === jamData.currentSong?.url);
+        const nextSongIndex = (currentIndex + 1) % jamData.playlist.length;
         const nextSong = jamData.playlist[nextSongIndex];
         await updateDoc(jamDocRef, {
           currentSong: nextSong,
@@ -423,51 +503,70 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
       audio.removeEventListener('ended', handleEnded);
       audio.removeEventListener('durationchange', handleDurationChange);
     };
-  }, [jamDocRef, canControl, jamData]);
+  }, [jamDocRef, canControl, jamData, isHost]);
 
 
-  // Add song to playlist
+  // Add song to playlist (handles both local file and hosted file)
+  const addSongToCurrentPlaylist = async (song) => {
+    // Assign a unique ID if missing
+    if (!song.id) {
+        song.id = 'song_' + Date.now() + Math.random().toString(36).substring(2, 9);
+    }
+    if (!canControl && jamData?.playlist.length > 0) { // Guests can't add if playlist not empty and no permissions
+      showAppMessage("You don't have permission to add songs to this jam.", 'error', 3000);
+      return;
+    }
+    if (!jamData) {
+      showAppMessage("Jam data not loaded. Please try again.", 'error', 3000);
+      return;
+    }
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        const jamDoc = await transaction.get(jamDocRef);
+        if (!jamDoc.exists()) {
+          throw new Error("Jam document does not exist!");
+        }
+        const currentPlaylist = jamDoc.data().playlist || [];
+        const updatedPlaylist = [...currentPlaylist, song];
+
+        transaction.update(jamDocRef, { playlist: updatedPlaylist });
+
+        // If no song is currently playing, set this as the current song and start playing
+        if (!jamDoc.data().currentSong) {
+          transaction.update(jamDocRef, {
+            currentSong: song,
+            currentTime: 0,
+            isPlaying: true,
+          });
+        }
+      });
+      showAppMessage(`Added "${song.title}" to Jam Session playlist!`, 'success', 2000);
+      setFileInputKey(Date.now()); // Reset file input
+    } catch (error) {
+      console.error('Error adding song to playlist:', error);
+      showAppMessage(`Failed to add song: ${error.message}.`, 'error', 4000);
+    }
+  };
+
+
   const handleFileChange = async (event) => {
     const file = event.target.files[0];
     if (file && file.type === 'audio/mpeg') {
-      try {
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-          const newSong = {
-            id: Date.now().toString(), // Simple unique ID
-            title: file.name,
-            url: e.target.result, // Data URL
-          };
-
-          // Use a transaction to ensure atomicity for playlist updates
-          await runTransaction(db, async (transaction) => {
-            const jamDoc = await transaction.get(jamDocRef);
-            if (!jamDoc.exists()) {
-              throw "Jam document does not exist!";
-            }
-            const currentPlaylist = jamDoc.data().playlist || [];
-            const updatedPlaylist = [...currentPlaylist, newSong];
-
-            transaction.update(jamDocRef, { playlist: updatedPlaylist });
-
-            // If no song is currently playing, set this as the current song and start playing
-            if (!jamDoc.data().currentSong) {
-              transaction.update(jamDocRef, {
-                currentSong: newSong,
-                currentTime: 0,
-                isPlaying: true,
-              });
-            }
-          });
-          setFileInputKey(Date.now()); // Reset file input
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const newSong = {
+          id: Date.now().toString(), // Simple unique ID
+          title: file.name,
+          url: e.target.result, // Data URL
+          type: 'audio',
+          thumbnail: "https://placehold.co/128x128/CCCCCC/FFFFFF?text=MP3"
         };
-        reader.readAsDataURL(file);
-      } catch (error) {
-        console.error('Error reading file or adding to playlist:', error);
-        setError('Failed to add song. Please try again.');
-      }
+        addSongToCurrentPlaylist(newSong);
+      };
+      reader.readAsDataURL(file);
     } else {
-      setError('Please select an MP3 file.');
+      showAppMessage('Please select an MP3 file.', 'error', 3000);
     }
   };
 
@@ -479,13 +578,13 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
         isPlaying: true,
       });
     } else {
-      setError("You don't have permission to change the song.");
+      showAppMessage("You don't have permission to change the song.", 'error', 3000); // FIX: Replaced setError
     }
   };
 
   const togglePlayback = async () => {
     if (!jamData || !jamData.currentSong) {
-      setError("No song loaded to play.");
+      showAppMessage("No song loaded to play.", 'error', 3000); // FIX: Replaced setError
       return;
     }
     if (canControl) {
@@ -493,7 +592,7 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
         isPlaying: !jamData.isPlaying,
       });
     } else {
-      setError("You don't have permission to control playback.");
+      showAppMessage("You don't have permission to control playback.", 'error', 3000); // FIX: Replaced setError
     }
   };
 
@@ -501,7 +600,11 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
     const newTime = parseFloat(e.target.value);
     audioRef.current.currentTime = newTime; // Update local immediately
     if (canControl) {
-      await updateDoc(jamDocRef, { currentTime: newTime });
+      // Only update Firestore if current user is host to prevent race conditions
+      // Guests just update their local player based on host's state
+      if (isHost) {
+         await updateDoc(jamDocRef, { currentTime: newTime });
+      }
     }
   };
 
@@ -518,7 +621,7 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
         allPermissions: !jamData.allPermissions,
       });
     } else {
-      setError("Only the host can change permissions.");
+      showAppMessage("Only the host can change permissions.", 'error', 3000); // FIX: Replaced setError
     }
   };
 
@@ -528,21 +631,60 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
         // If host is leaving, delete the jam room
         await deleteDoc(jamDocRef);
         console.log('Host left, jam room deleted.');
+        showAppMessage('You have ended the Jam Session for everyone.', 'info', 3000);
       } else {
         // If a regular user is leaving, remove them from the users map
+        const updatedUsers = { ...jamData.users };
+        delete updatedUsers[userId];
         await updateDoc(jamDocRef, {
-          [`users.${userId}`]: deleteDoc.FieldValue.delete(),
+          users: updatedUsers,
         });
         console.log('User left, removed from jam list.');
+        showAppMessage('You have left the Jam Session.', 'info', 3000);
       }
     } catch (error) {
       console.error('Error leaving jam:', error);
-      setError('Failed to leave jam cleanly.');
+      showAppMessage('Failed to leave jam cleanly. Please try again.', 'error', 3000); // FIX: Replaced setError
     } finally {
       setCurrentView('home');
       setCurrentJamId(null);
+      // Remove jamId from URL params when leaving
+      const newUrl = window.location.origin + window.location.pathname;
+      window.history.replaceState({}, document.title, newUrl);
     }
   };
+
+  const handleRandomHostedPlay = () => {
+    if (!canControl) {
+      showAppMessage("You don't have permission to start random playback.", 'error', 3000);
+      return;
+    }
+    if (hostedSongsList.length === 0) {
+      showAppMessage("No hosted songs available to play randomly.", 'error', 3000);
+      return;
+    }
+
+    const randomSongs = [];
+    const tempHostedList = [...hostedSongsList]; // Create a mutable copy
+    while (randomSongs.length < Math.min(5, hostedSongsList.length)) {
+      const randomIndex = Math.floor(Math.random() * tempHostedList.length);
+      randomSongs.push(tempHostedList.splice(randomIndex, 1)[0]); // Remove to ensure uniqueness
+    }
+
+    // Replace current playlist with random songs and set the first one to play
+    updateDoc(jamDocRef, {
+      playlist: randomSongs,
+      currentSong: randomSongs.length > 0 ? randomSongs[0] : null,
+      currentTime: 0,
+      isPlaying: randomSongs.length > 0,
+    }).then(() => {
+      showAppMessage(`Started random playback with ${randomSongs.length} songs!`, 'success', 2000);
+    }).catch(e => {
+      console.error("Error setting random playlist:", e);
+      showAppMessage("Failed to start random playback.", 'error', 3000);
+    });
+  };
+
 
   if (loading) {
     return (
@@ -594,10 +736,10 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
           <button
             onClick={() => {
               navigator.clipboard.writeText(shareLink).then(() => {
-                alert('Jam link copied to clipboard!');
+                showAppMessage('Jam link copied to clipboard!', 'info', 2000); // FIX: Replaced alert
               }).catch(err => {
                 console.error('Failed to copy text: ', err);
-                alert('Failed to copy link. Please copy it manually: ' + shareLink);
+                showAppMessage('Failed to copy link. Please copy it manually: ' + shareLink, 'error', 4000); // FIX: Replaced alert
               });
             }}
             className="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out transform hover:scale-105"
@@ -614,7 +756,10 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
             <h2 className="text-3xl font-bold mb-4 text-center text-cyan-400">Now Playing</h2>
             {jamData?.currentSong ? (
               <div className="text-center">
+                {/* FIX: Add thumbnail display */}
+                <img src={jamData.currentSong.thumbnail || "https://placehold.co/128x128/CCCCCC/FFFFFF?text=MP3"} alt="Album Art" className="w-32 h-32 rounded-lg mx-auto mb-4 object-cover shadow-md" />
                 <p className="text-xl font-semibold mb-2">{jamData.currentSong.title}</p>
+                <p className="text-md text-gray-300 mb-4">{jamData.currentSong.artist || 'Unknown Artist'}</p>
                 <div className="flex items-center justify-center space-x-4 mb-4">
                   <button
                     onClick={togglePlayback}
@@ -645,8 +790,8 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
 
           <div className="mt-8 text-center">
             <h3 className="text-2xl font-bold mb-4 text-emerald-400">Add MP3 to Playlist</h3>
-            <label htmlFor="mp3-upload" className="inline-block bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 cursor-pointer">
-              <i className="fas fa-upload mr-2"></i> Upload MP3
+            <label htmlFor="mp3-upload" className="inline-block bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+              <i className="fas fa-upload mr-2"></i> Upload Local MP3
             </label>
             <input
               key={fileInputKey} // Ensures input resets after file selection
@@ -657,7 +802,58 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
               className="hidden"
               disabled={!canControl && jamData?.playlist.length > 0} // Allow anyone to upload if playlist is empty, otherwise only controllers
             />
-            {error && <p className="text-red-400 mt-4">{error}</p>}
+
+            {/* FIX: Add Random Hosted Play Button */}
+            <button
+              onClick={handleRandomHostedPlay}
+              disabled={!canControl}
+              className="mt-4 w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <i className="fas fa-random mr-2"></i> Play Random Hosted Songs
+            </button>
+
+            {/* FIX: Add Search Hosted MP3s Section */}
+            <button
+              onClick={() => setShowSearchSection(!showSearchSection)}
+              disabled={!canControl}
+              className="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <i className="fas fa-search mr-2"></i> {showSearchSection ? 'Hide Hosted Search' : 'Search Hosted MP3s'}
+            </button>
+
+            {showSearchSection && (
+              <div className="mt-6 p-4 bg-gray-700 rounded-lg">
+                <input
+                  type="text"
+                  placeholder="Search hosted songs..."
+                  className="w-full p-2 rounded-md bg-gray-600 border border-gray-500 text-white placeholder-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+                <div className="mt-4 max-h-60 overflow-y-auto custom-scrollbar">
+                  {searchResults.length > 0 ? (
+                    <ul className="space-y-2">
+                      {searchResults.map(song => (
+                        <li key={song.id} className="flex items-center justify-between p-2 bg-gray-600 rounded-md">
+                          <span className="truncate text-sm">{song.title} - {song.artist}</span>
+                          <button
+                            onClick={() => addSongToCurrentPlaylist(song)}
+                            className="ml-2 px-3 py-1 bg-green-500 text-white rounded-md hover:bg-green-600 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                            disabled={!canControl}
+                          >
+                            Add
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : searchTerm.length > 0 ? (
+                    <p className="text-center text-gray-400">No results found.</p>
+                  ) : (
+                    <p className="text-center text-gray-400">Start typing to search hosted MP3s.</p>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </section>
 
@@ -729,11 +925,6 @@ const JamSession = ({ db, auth, userId, jamId, userName, setCurrentView, setCurr
           scrollbar-color: #6b7280 #374151;
         }
       `}</style>
-
-      {/* Tailwind CSS and Font Awesome CDN */}
-      <script src="https://cdn.tailwindcss.com"></script>
-      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-      <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css" />
     </div>
   );
 };

@@ -14,7 +14,7 @@
   ],
   "functions": {
     "app.py": {
-      "maxDuration": 300 // Set to 300 seconds (5 minutes) or your desired maximum
+      "maxDuration": 90 // Set to 300 seconds (5 minutes) or your desired maximum
     }
   },
   "build": {

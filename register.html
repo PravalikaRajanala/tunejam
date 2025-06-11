@@ -105,11 +105,21 @@ const firebaseConfig = {
             window.location.href = "/dashboard";
           }, 1500); // Give user time to read the message
         } else {
-          const errorData = await res.json();
-          showModal("Registration failed: " + (errorData.error || "Unknown error"));
+          // Handle non-2xx responses from the server
+          let errorContent;
+          const contentType = res.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+            errorContent = await res.json();
+            showModal("Registration failed: " + (errorContent.error || "Unknown error"));
+          } else {
+            errorContent = await res.text();
+            console.error("Server responded with non-JSON error for registration:", errorContent);
+            showModal("Registration failed: Server error (Check console for details)");
+          }
         }
       } catch (err) {
-        // Handle Firebase authentication errors
+        // This catch block handles network errors or errors thrown directly by Firebase SDK (e.g., email-already-in-use, weak-password)
+        console.error("Client-side error during registration:", err);
         let errorMessage = "An error occurred during registration.";
         if (err.code === 'auth/email-already-in-use') {
           errorMessage = "This email is already in use. Please try logging in or use a different email.";
@@ -118,7 +128,7 @@ const firebaseConfig = {
         } else if (err.code === 'auth/invalid-email') {
           errorMessage = "Please enter a valid email address.";
         } else {
-          errorMessage = err.message;
+          errorMessage = err.message || "Unknown error."; // Fallback for other errors
         }
         showModal("Error: " + errorMessage);
       } finally {

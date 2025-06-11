@@ -9,7 +9,44 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <!-- Socket.IO Client Library -->
     <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
-    <!-- Removed Firebase SDK imports -->
+    <!-- Firebase SDK (New) -->
+    <script type="module">
+        // Import the functions you need from the SDKs you need
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, collection, query, where, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Your Firebase project configuration (REPLACE WITH YOUR ACTUAL CONFIG)
+        const firebaseConfig = {
+            apiKey: "AIzaSyAcVqgLOMO-5C8-lZbsjTQB1K7KRKf3Veg",
+            authDomain: "audio-player-b4f54.firebaseapp.com",
+            projectId: "audio-player-b4f54",
+            storageBucket: "audio-player-b4f54.firebasestorage.app",
+            messagingSenderId: "255619096574",
+            appId: "1:255619096574:web:b8a7387e7761811858aaaf",
+            measurementId: "G-42QFEP0HRT"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        // Make Firebase instances globally accessible for the script section
+        window.firebaseApp = app;
+        window.firebaseDb = db;
+        window.firebaseAuth = auth;
+        window.firebaseDoc = doc; // Expose doc for easier use
+        window.firebaseOnSnapshot = onSnapshot; // Expose onSnapshot
+        window.firebaseGetDoc = getDoc; // Expose getDoc
+        window.firebaseSetDoc = setDoc; // Expose setDoc
+        window.firebaseUpdateDoc = updateDoc; // Expose updateDoc
+        window.firebaseDeleteDoc = deleteDoc; // Expose deleteDoc
+        window.firebaseCollection = collection; // Expose collection
+        window.firebaseSignInAnonymously = signInAnonymously; // Expose signInAnonymously
+        window.firebaseOnAuthStateChanged = onAuthStateChanged; // Expose onAuthStateChanged
+        window.firebaseSignInWithCustomToken = signInWithCustomToken; // Expose signInWithCustomToken
+    </script>
     
     <style>
         /* Custom styles to enhance Tailwind's default behavior and provide specific overrides */
@@ -378,31 +415,75 @@
         </div>
     </div>
 
+    <!-- Confirmation Modal (NEW) -->
+    <div id="confirmation-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3 id="confirmation-modal-title" class="text-xl font-bold text-gray-800 mb-4 text-center"></h3>
+            <p id="confirmation-modal-message" class="text-gray-700 mb-6 text-center"></p>
+            <div class="flex justify-center space-x-4">
+                <button id="confirm-yes-btn" class="bg-red-500 text-white py-2 px-6 rounded-lg hover:bg-red-600 transition-colors duration-200">Yes</button>
+                <button id="confirm-no-btn" class="bg-gray-300 text-gray-800 py-2 px-6 rounded-lg hover:bg-gray-400 transition-colors duration-200">No</button>
+            </div>
+        </div>
+    </div>
+
+
     <script type="module">
-        // Removed Firebase SDK imports and initializations.
+        // Globally accessible Firebase instances (initialized in the script tag above)
+        const db = window.firebaseDb;
+        const auth = window.firebaseAuth;
+        const doc = window.firebaseDoc;
+        const onSnapshot = window.firebaseOnSnapshot;
+        const getDoc = window.firebaseGetDoc;
+        const setDoc = window.firebaseSetDoc;
+        const updateDoc = window.firebaseUpdateDoc;
+        const deleteDoc = window.firebaseDeleteDoc;
+        const collection = window.firebaseCollection;
+        const signInAnonymously = window.firebaseSignInAnonymously;
+        const onAuthStateChanged = window.firebaseOnAuthStateChanged;
+        const signInWithCustomToken = window.firebaseSignInWithCustomToken;
 
-        // Global variables
-        let jamId = null;
-        let socket = null; // Socket.IO instance
-        let currentJamHostSid = null; // Store the host SID from socket.io
-        let currentJamName = ''; // Store the name of the current jam
+
+        const FLASK_BACKEND_URL = 'http://localhost:5000'; // Set to 'http://localhost:5000' for local, '' for Vercel
+
+        // IMPORTANT: Replace 'YOUR_TELUGU_SONGS_DRIVE_FOLDER_ID_HERE' with your actual Google Drive Folder ID
+        const PUBLIC_TELUGU_SONGS_FOLDER_ID = '1zBAeBpuMNmnqEGxPJtBn5MS0m8p2SOob';
+
+        // Socket.IO setup (still used for direct signaling, but Firestore is source of truth for state)
+        const socket = io(FLASK_BACKEND_URL); 
+        
+        let currentJamId = null;
+        let isHost = false;
+        let myNickname = '';
+        let jamSessionPlaylist = []; // The playlist used in the jam session, synchronized from Firestore
+        let jamSessionParticipants = {}; // Participants in the current jam session {sid: {nickname: '...', permissions: {}}}
+        let unsubscribeJamListener = null; // To unsubscribe from Firestore snapshot listener
         let myPermissions = { play: false, add: false, remove: false }; // Current client's permissions
-        let jamSessionParticipants = {}; // Object of {sid: {nickname: '...', permissions: {}}}
 
-        // Elements
-        const audioPlayer = new Audio();
-        const playPauseBtn = document.getElementById('play-pause-btn');
-        const playPauseIcon = document.getElementById('play-pause-icon');
-        const prevBtn = document.getElementById('prev-btn');
-        const nextBtn = document.getElementById('next-btn');
-        const volumeSlider = document.getElementById('volume-slider');
+        // Global YouTube Player variable
+        let youtubePlayer;
+        let youtubePlayerReady = false;
+
+        let isPlayingRandomHostedMode = false; // Renamed to align with HTML for hosted MP3s
+        let fullHostedSongsList = []; // Renamed to align with HTML for hosted MP3s
+        const INITIAL_RANDOM_QUEUE_SIZE = 10; // Renamed to align with HTML for hosted MP3s
+
+
+        // --- DOM Elements ---
+        const audioPlayer = document.getElementById('audio-player'); // Removed 'audio-' prefix from HTML ID in previous version, matching here
+        const playPauseButton = document.getElementById('play-pause-btn'); // Matched ID with current HTML
+        const playPauseIcon = document.getElementById('play-pause-icon'); // Matched ID with current HTML
         const progressBar = document.getElementById('progress-bar');
         const currentTimeSpan = document.getElementById('current-time');
-        const durationSpan = document.getElementById('duration');
-        const songTitleSpan = document.getElementById('song-title');
-        const songArtistSpan = document.getElementById('song-artist');
-        const songThumbnailImg = document.getElementById('song-thumbnail');
-        const youtubePlayerDiv = document.getElementById('youtube-player');
+        const totalTimeSpan = document.getElementById('duration'); // Matched ID with current HTML
+        const volumeSlider = document.getElementById('volume-slider'); // Matched ID with current HTML
+        const prevBtn = document.getElementById('prev-btn'); // Matched ID with current HTML
+        const nextBtn = document.getElementById('next-btn'); // Matched ID with current HTML
+        const songTitleSpan = document.getElementById('song-title'); // Matched ID with current HTML
+        const songArtistSpan = document.getElementById('song-artist'); // Matched ID with current HTML
+        const songThumbnailImg = document.getElementById('song-thumbnail'); // Matched ID with current HTML
+        const youtubePlayerDiv = document.getElementById('youtube-player'); // Matched ID with current HTML
+
         const localPlayerControls = document.getElementById('local-player-controls');
         const youtubePlayerControls = document.getElementById('youtube-player-controls');
         const youtubeProgressBar = document.getElementById('youtube-progress-bar');
@@ -414,11 +495,14 @@
         const youtubePrevBtn = document.getElementById('youtube-prev-btn');
         const youtubeNextBtn = document.getElementById('youtube-next-btn');
 
+
         const playlistContainer = document.getElementById('playlist-container');
-        const searchInput = document.getElementById('search-input');
-        const searchButton = document.getElementById('search-button');
-        const searchResultsContainer = document.getElementById('search-results');
-        const youtubeSearchResultsModal = document.getElementById('youtube-search-results-modal'); // Renamed for clarity in modal
+
+        // Buttons and Dropdowns
+        const searchButton = document.getElementById('search-button'); // Main search button
+        const searchInput = document.getElementById('search-input'); // Search input in search modal
+        const searchResultsContainer = document.getElementById('search-results'); // Hosted MP3 search results
+        const youtubeSearchResultsModal = document.getElementById('youtube-search-results-modal'); // YouTube search results in modal
         const closeSearchModalBtn = document.getElementById('close-search-modal');
         const searchModal = document.getElementById('search-modal');
         const addSongModal = document.getElementById('add-song-modal');
@@ -427,274 +511,355 @@
         const addSongArtist = document.getElementById('add-song-artist');
         const addSongThumbnail = document.getElementById('add-song-thumbnail');
         const confirmAddSongBtn = document.getElementById('confirm-add-song-btn');
-        const joinJamModal = document.getElementById('join-jam-modal');
-        const closeJoinJamModalBtn = document.getElementById('close-join-jam-modal');
-        const createJamModal = document.getElementById('create-jam-modal');
-        const closeCreateJamModalBtn = document.getElementById('close-create-jam-modal');
-        const createJamButton = document.getElementById('create-jam-button');
-        const joinJamButton = document.getElementById('join-jam-button');
+
+
+        const managePlaylistButton = document.getElementById('manage-playlist-button');
+        const playRandomHostedSongsButton = document.getElementById('play-random-hosted-songs-btn'); // Matched ID with current HTML
+
+        // Modals
+        const youtubeModal = document.getElementById('youtube-modal'); // YouTube modal - renamed in current HTML, using this
+        const managePlaylistModal = document.getElementById('manage-playlist-modal');
+
+        // Removed Google Drive search from main section, using searchModal now.
+        const addOptionsContainer = document.getElementById('add-options-container'); // This refers to Google Drive search section from old code
+        // This is now redundant as 'Search & Add Songs' button is primary. It should be hidden.
+        if (addOptionsContainer) addOptionsContainer.classList.add('hidden'); 
+
+        const openOptionsDropdownButton = document.getElementById('open-options-dropdown-button'); // This button is not in current HTML, removing logic for it
+        const optionsDropdown = document.getElementById('options-dropdown'); // This dropdown is not in current HTML, removing logic for it
+        // These elements are from the old code, which the user provided.
+        // In the new `index-html-permissions` HTML, the 'Add Songs' button is directly search-button.
+        // The three dots dropdown was replaced by direct 'Create Jam Session' and 'Join Jam Session' buttons.
+        // So, the `openOptionsDropdownButton`, `optionsDropdown`, `addYoutubeSongDropdown` are NOT in the current HTML.
+        // The HTML provided in the selection tag has direct buttons:
+        // `create-jam-session-dropdown-btn` and `join-jam-session-dropdown-btn`
+        // I will keep the original IDs as per the provided HTML.
+
         const createJamSessionDropdownBtn = document.getElementById('create-jam-session-dropdown-btn');
         const joinJamSessionDropdownBtn = document.getElementById('join-jam-session-dropdown-btn');
-        const joinJamIdInput = document.getElementById('join-jam-id-input'); // Renamed for clarity
-        const joinJamNicknameInput = document.getElementById('join-jam-nickname-input');
-        const createJamNameInput = document.getElementById('create-jam-name-input');
-        const createJamNicknameInput = document.getElementById('create-jam-nickname-input');
-        const jamControlsDiv = document.getElementById('jam-controls');
-        const jamIdDisplay = document.getElementById('jam-id-display');
-        const jamNameDisplay = document.getElementById('jam-name-display');
-        const shareJamLinkButton = document.getElementById('share-jam-link-btn');
-        const copyJamIdButton = document.getElementById('copy-jam-id-btn');
-        const leaveJamButton = document.getElementById('leave-jam-btn');
-        const participantsList = document.getElementById('participants-list');
-        const messageModal = document.getElementById('message-modal');
-        const modalMessage = document.getElementById('modal-message');
-        const modalOkButton = document.getElementById('modal-ok-button');
-        const playRandomHostedSongsButton = document.getElementById('play-random-hosted-songs-btn');
+
+        
+        // Elements within YouTube Modal (as per selected HTML)
+        const youtubeUrlInputModal = document.getElementById('youtube-url-input-modal');
+        const addFromUrlButton = document.getElementById('add-from-url-button');
+        const youtubeTextSearchInput = document.getElementById('youtube-text-search-input');
+        const performYoutubeTextSearchButton = document.getElementById('perform-youtube-text-search');
+        const youtubeSearchResults = document.getElementById('youtube-search-results');
+        
+        const editablePlaylistContainer = document.getElementById('editable-playlist-container');
+        const playlistEmptyMessage = document.getElementById('playlist-empty-message');
+
+        // Jam Session Modals and Elements (as per selected HTML)
+        const createJamModal = document.getElementById('create-jam-modal');
+        const createJamNameInput = document.getElementById('create-jam-name-input'); // Renamed to match selected HTML
+        const createJamNicknameInput = document.getElementById('create-jam-nickname-input'); // Renamed to match selected HTML
+        const createJamButton = document.getElementById('create-jam-button');
+        const shareLinkContainer = document.getElementById('share-link-container');
+        const jamShareLinkInput = document.getElementById('jam-share-link');
+        const copyShareLinkButton = document.getElementById('copy-share-link-button');
+
+        const joinJamModal = document.getElementById('join-jam-modal');
+        const joinJamNameDisplay = document.getElementById('join-jam-name-display');
+        const joinJamIdInput = document.getElementById('join-jam-id-input'); // Matched ID with current HTML
+        const joinJamNicknameInput = document.getElementById('join-jam-nickname-input'); // Matched ID with current HTML
+        const joinJamButton = document.getElementById('join-jam-button');
+
+        const jamControlsDiv = document.getElementById('jam-controls'); // Matched ID with current HTML
+        const jamIdDisplay = document.getElementById('jam-id-display'); // Matched ID with current HTML
+        const jamNameDisplay = document.getElementById('jam-name-display'); // Matched ID with current HTML
+        const participantsList = document.getElementById('participants-list'); // Matched ID with current HTML
+        const shareJamLinkButton = document.getElementById('share-jam-link-btn'); // Matched ID with current HTML
+        const copyJamIdButton = document.getElementById('copy-jam-id-btn'); // Matched ID with current HTML
+        const leaveJamButton = document.getElementById('leave-jam-btn'); // Matched ID with current HTML
+        const participantsCount = document.getElementById('participants-count'); // Matched ID with current HTML
+
         const permissionsManagementDiv = document.getElementById('permissions-management'); // New
         const permissionsList = document.getElementById('permissions-list'); // New
 
-        // Global state
-        let playlist = []; // User's local playlist when not in a jam
-        let jamSessionPlaylist = []; // Playlist for the current jam session (synced by Socket.IO)
+        const messageModal = document.getElementById('message-modal');
+        const modalMessage = document.getElementById('modal-message');
+        const modalOkButton = document.getElementById('modal-ok-button');
+
+        // Confirmation Modal elements (NEW)
+        const confirmationModal = document.getElementById('confirmation-modal');
+        const confirmationModalTitle = document.getElementById('confirmation-modal-title');
+        const confirmationModalMessage = document.getElementById('confirmation-modal-message');
+        const confirmYesBtn = document.getElementById('confirm-yes-btn');
+        const confirmNoBtn = document.getElementById('confirm-no-btn');
+
+
+        const playlist = []; // Main player local playlist. This is only used when NOT in a jam session.
+
         let currentTrackIndex = 0;
-        let isPlaying = false;
-        let selectedSongForAdd = null; // Temporarily store song details for add modal
-        let youtubePlayer; // YouTube player instance
-        let activePlayer = 'local'; // 'local' or 'youtube'
+        let progressInterval;
+        let syncInterval; // For host to send regular updates to Firestore
+
+        let userId = null; // Firebase User ID
         let currentPlaybackTime = 0; // To store and sync playback time
         let isSeeking = false; // Flag to prevent sync during seeking
-        let fullHostedSongsList = []; // Stores the full list of hosted MP3s
-        let isLoadingRandomSongs = false; // Prevent multiple clicks on random play
-        const INITIAL_RANDOM_QUEUE_SIZE = 10;
-        let isPlayingRandomHostedMode = false;
 
 
-        // Constants
-        const BASE_HOSTED_MP3_CDN_URL = "https://vermillion-raindrop-7966d4.netlify.app";
+        // --- Firebase Auth Listener (New) ---
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                userId = user.uid;
+                console.log("Firebase authenticated. User ID:", userId);
+                // Now that we have a user, proceed with app initialization or jam session logic
+                handleInitialLoadAndJamJoin();
 
-        // --- Utility Functions ---
-
-        /**
-         * Displays a modal message to the user.
-         * @param {string} message - The message to display.
-         * @param {number} duration - How long to display the message in milliseconds (optional).
-         */
-        function showMessage(message, duration = 3000) {
-            modalMessage.textContent = message;
-            messageModal.classList.remove('hidden');
-            if (duration) {
-                setTimeout(() => {
-                    messageModal.classList.add('hidden');
-                }, duration);
+            } else {
+                console.log("Firebase not authenticated. Signing in anonymously...");
+                signInAnonymously(auth).then(() => {
+                    console.log("Signed in anonymously.");
+                }).catch((error) => {
+                    console.error("Anonymous sign-in failed:", error);
+                    showMessage(`Authentication failed: ${error.message}. Jam features may not work.`, 6000);
+                    // Disable jam features on critical Firebase auth failure
+                    createJamSessionDropdownBtn.disabled = true;
+                    createJamSessionDropdownBtn.classList.add('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
+                    joinJamSessionDropdownBtn.disabled = true;
+                    joinJamSessionDropdownBtn.classList.add('opacity-70', 'cursor-not-allowed', 'pointer-events-none');
+                });
             }
-        }
-
-        modalOkButton.addEventListener('click', () => {
-            messageModal.classList.add('hidden');
         });
 
-        /**
-         * Formats time from seconds to MM:SS.
-         * @param {number} seconds - Time in seconds.
-         * @returns {string} Formatted time string.
-         */
+
+        // --- Utility Functions ---
         function formatTime(seconds) {
+            if (isNaN(seconds) || seconds < 0) return "0:00";
             const minutes = Math.floor(seconds / 60);
             const remainingSeconds = Math.floor(seconds % 60);
             return `${minutes}:${remainingSeconds < 10 ? '0' : ''}${remainingSeconds}`;
         }
 
-        function generateUniqueId() {
-            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-                var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
-                return v.toString(16);
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+        }
+
+        function showMessage(message, duration = 3000) {
+            const msgBox = document.getElementById('custom-message-box');
+            msgBox.textContent = message;
+            msgBox.classList.remove('hidden');
+            msgBox.classList.add('show');
+            clearTimeout(msgBox.messageTimeout); // Clear any existing timeout
+            msgBox.messageTimeout = setTimeout(() => {
+                msgBox.classList.remove('show');
+                msgBox.classList.add('hidden');
+            }, duration);
+        }
+
+        function showLoading() {
+            document.getElementById('loading-overlay').classList.remove('hidden');
+        }
+
+        function hideLoading() {
+            document.getElementById('loading-overlay').classList.add('hidden');
+        }
+
+        function extractYouTubeVideoId(url) {
+            let videoId = '';
+            const youtubeRegex = /(?:https?:\/\/)?(?:www\.)?(?:m\.)?(?:youtube\.com|youtu\.be)\/(?:watch\?v=|embed\/|v\/|)([\w-]{11})(?:\S+)?/i;
+            const match = url.match(youtubeRegex);
+            if (match && match[1]) {
+                videoId = match[1];
+            }
+            return videoId;
+        }
+
+        // Custom Confirmation Dialog (NEW)
+        function showConfirmation(title, message, onConfirm) {
+            confirmationModalTitle.textContent = title;
+            confirmationModalMessage.textContent = message;
+            confirmationModal.classList.remove('hidden');
+
+            const handleYes = () => {
+                confirmationModal.classList.add('hidden');
+                confirmYesBtn.removeEventListener('click', handleYes);
+                confirmNoBtn.removeEventListener('click', handleNo);
+                onConfirm(true);
+            };
+
+            const handleNo = () => {
+                confirmationModal.classList.add('hidden');
+                confirmYesBtn.removeEventListener('click', handleYes);
+                confirmNoBtn.removeEventListener('click', handleNo);
+                onConfirm(false);
+            };
+
+            confirmYesBtn.addEventListener('click', handleYes);
+            confirmNoBtn.addEventListener('click', handleNo);
+        }
+
+
+        // --- YouTube API Integration ---
+        function loadYouTubeAPI() {
+            const tag = document.createElement('script');
+            tag.src = "https://www.youtube.com/iframe_api";
+            const firstScriptTag = document.getElementsByTagName('script')[0];
+            firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+        }
+
+        window.onYouTubeIframeAPIReady = function() {
+            youtubePlayer = new YT.Player('youtube-player', { // Using 'youtube-player' div directly
+                height: '100%', // Set to 100% to fill container
+                width: '100%',  // Set to 100% to fill container
+                videoId: '',
+                playerVars: {
+                    'playsinline': 1,
+                    'autoplay': 0, // Autoplay set to 0 to prevent issues
+                    'controls': 0,
+                    'disablekb': 1,
+                    'fs': 0,
+                    'iv_load_policy': 3,
+                    'modestbranding': 1,
+                    'rel': 0,
+                    'showinfo': 0,
+                    'start': 0
+                },
+                events: {
+                    'onReady': onPlayerReady,
+                    'onStateChange': onPlayerStateChange,
+                    'onError': onPlayerError
+                }
             });
         }
 
-
-        // --- UI Visibility and State Management ---
-
-        /**
-         * Updates UI for audio player controls based on active player (local/YouTube).
-         * @param {string} playerType - 'local' or 'youtube'.
-         */
-        function setActivePlayerUI(playerType) {
-            if (playerType === 'youtube') {
-                localPlayerControls.classList.add('hidden');
-                youtubePlayerControls.classList.remove('hidden');
-                youtubePlayerDiv.classList.remove('hidden'); // Show YouTube iframe
-                songThumbnailImg.classList.add('hidden'); // Hide static thumbnail
-                activePlayer = 'youtube';
-            } else {
-                localPlayerControls.classList.remove('hidden');
-                youtubePlayerControls.classList.add('hidden');
-                youtubePlayerDiv.classList.add('hidden'); // Hide YouTube iframe
-                songThumbnailImg.classList.remove('hidden'); // Show static thumbnail
-                activePlayer = 'local';
+        function onPlayerReady(event) {
+            youtubePlayerReady = true;
+            console.log("YouTube Player is ready.");
+            if (currentJamId && jamSessionPlaylist.length > 0) {
+                // If in a jam session and YouTube player becomes ready, re-sync to current track
+                // The onSnapshot listener will handle the actual playback synchronization.
+            } else if (!currentJamId && playlist.length > 0 && playlist[currentTrackIndex] && playlist[currentTrackIndex].type === 'youtube') {
+                 // If not in a jam, try to load current local youtube track, but don't autoplay
+                loadTrack(currentTrackIndex, false); 
             }
         }
 
-        /**
-         * Resets the player UI to a default state (no song playing).
-         */
-        function resetPlayerUI() {
-            songTitleSpan.textContent = 'No song selected';
-            songArtistSpan.textContent = '';
-            songThumbnailImg.src = 'https://placehold.co/128x128/CCCCCC/FFFFFF?text=No+Track';
-            playPauseIcon.classList.remove('fa-pause');
-            playPauseIcon.classList.add('fa-play');
-            youtubePlayPauseIcon.classList.remove('fa-pause');
-            youtubePlayPauseIcon.classList.add('fa-play');
-            currentTimeSpan.textContent = '0:00';
-            durationSpan.textContent = '0:00';
-            progressBar.value = 0;
-            youtubeCurrentTimeSpan.textContent = '0:00';
-            youtubeDurationSpan.textContent = '0:00';
-            youtubeProgressBar.value = 0;
-            isPlaying = false;
-            audioPlayer.pause();
-            if (youtubePlayer) {
-                youtubePlayer.pauseVideo();
-            }
-            setActivePlayerUI('local'); // Reset to local player controls by default
-        }
+        function onPlayerStateChange(event) {
+            // Check if player is actually paused/playing before emitting
+            const isCurrentlyPlaying = (event.data === YT.PlayerState.PLAYING);
+            const isCurrentlyPaused = (event.data === YT.PlayerState.PAUSED || event.data === YT.PlayerState.ENDED);
 
-        /**
-         * Renders the current playlist in the UI.
-         */
-        function renderPlaylist() {
-            const activePlaylist = jamId ? jamSessionPlaylist : playlist;
-            playlistContainer.innerHTML = '';
-            if (activePlaylist.length === 0) {
-                playlistContainer.innerHTML = '<p class="text-gray-500 text-center py-4">Playlist is empty. Add some songs!</p>';
-                return;
-            }
-
-            activePlaylist.forEach((song, index) => {
-                const li = document.createElement('li');
-                li.className = `flex items-center justify-between p-3 rounded-lg cursor-pointer transition-all duration-200 ${index === currentTrackIndex && isPlaying ? 'bg-blue-100 dark:bg-blue-800' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}`;
-                
-                // Add disabled styling if not host and in a jam
-                if (jamId && socket.id !== currentJamHostSid && !myPermissions.play) {
-                    li.classList.add('opacity-70', 'cursor-not-allowed');
-                }
-
-                li.innerHTML = `
-                    <div class="flex items-center space-x-3 flex-grow">
-                        <img src="${song.thumbnail || 'https://placehold.co/40x40/CCCCCC/FFFFFF?text=MP3'}" alt="Thumbnail" class="w-10 h-10 rounded-md object-cover shadow-sm">
-                        <div class="flex-grow">
-                            <h4 class="text-base font-medium text-gray-800 dark:text-white truncate">${song.title}</h4>
-                            <p class="text-sm text-gray-500 dark:text-gray-400 truncate">${song.artist || song.uploader || 'Unknown Artist'}</p>
-                        </div>
-                    </div>
-                    ${jamId && (socket.id === currentJamHostSid || myPermissions.remove) ? `<button class="remove-song-btn ml-2 p-2 rounded-full hover:bg-red-100 dark:hover:bg-red-800 text-red-600 dark:text-red-300 transition-colors duration-200" data-song-id="${song.id}">
-                        <i class="fas fa-times"></i>
-                    </button>` : ''}
-                `;
-                li.addEventListener('click', (event) => {
-                    if (jamId && socket.id !== currentJamHostSid && !myPermissions.play) {
-                        showMessage("You do not have permission to play songs in this jam.", 3000);
-                        return;
-                    }
-                    if (!event.target.closest('.remove-song-btn')) {
-                        playTrack(index);
-                    }
-                });
-
-                // Add event listener for remove button if in a jam session AND has remove permission
-                if (jamId && (socket.id === currentJamHostSid || myPermissions.remove)) {
-                    const removeButton = li.querySelector('.remove-song-btn');
-                    if (removeButton) {
-                        removeButton.addEventListener('click', (event) => {
-                            event.stopPropagation(); // Prevent li click
-                            const songId = event.currentTarget.dataset.songId;
-                            removeSongFromJam(songId);
-                        });
+            if (isCurrentlyPlaying) {
+                youtubePlayPauseIcon.classList.remove('fa-play');
+                youtubePlayPauseIcon.classList.add('fa-pause');
+                //playPauseButton.classList.add('is-playing'); // This is for local player
+                clearInterval(progressInterval);
+                progressInterval = setInterval(updateProgressBar, 1000);
+            } else if (isCurrentlyPaused) {
+                youtubePlayPauseIcon.classList.remove('fa-pause');
+                youtubePlayPauseIcon.classList.add('fa-play');
+                //playPauseButton.classList.remove('is-playing'); // This is for local player
+                clearInterval(progressInterval);
+                if (event.data === YT.PlayerState.ENDED) {
+                    if (!currentJamId || isHost || myPermissions.play) { // Ensure play permission or host
+                        playNextTrack(); // Host or local player controls next track
                     }
                 }
-                playlistContainer.appendChild(li);
-            });
-            updatePlayerControlPermissions(); // Re-evaluate permissions after rendering
+            }
+            if (currentJamId && isHost) {
+                // Host updates Firestore whenever playback state changes
+                updateFirestorePlaybackState();
+            }
         }
 
-        /**
-         * Plays a track from the active playlist by index.
-         * @param {number} index - The index of the track to play.
-         * @param {number} startTime - Optional start time in seconds.
-         */
-        async function playTrack(index, startTime = 0) {
-            const activePlaylist = jamId ? jamSessionPlaylist : playlist;
+        function onPlayerError(event) {
+            console.error("YouTube Player Error:", event.data);
+            showMessage(`YouTube playback error (${event.data}). Skipping to next song.`, 4000);
+            if (!currentJamId || isHost || myPermissions.play) { // Ensure play permission or host
+                playNextTrack(); // Host or local player controls next track
+            }
+        }
+
+        // --- Core Player Functions ---
+        async function loadTrack(index, autoPlay = true) {
+            const activePlaylist = currentJamId ? jamSessionPlaylist : playlist;
+
             if (index < 0 || index >= activePlaylist.length) {
+                console.warn("Invalid track index or playlist is empty.");
                 resetPlayerUI();
                 return;
             }
 
-            // Check permissions before playing
-            if (jamId && !myPermissions.play) {
-                showMessage("You do not have permission to play songs in this jam.", 3000);
-                return;
+            // Remove 'current-song' class from all playlist items
+            const currentActive = document.querySelector('.playlist-item.current-song');
+            if (currentActive) {
+                currentActive.classList.remove('current-song');
             }
 
-            const song = activePlaylist[index];
             currentTrackIndex = index;
-            isPlaying = true;
-            songTitleSpan.textContent = song.title;
-            songArtistSpan.textContent = song.artist || song.uploader || 'Unknown Artist';
-            songThumbnailImg.src = song.thumbnail || 'https://placehold.co/128x128/CCCCCC/FFFFFF?text=No+Track';
-            playPauseIcon.classList.remove('fa-play');
-            playPauseIcon.classList.add('fa-pause');
-            youtubePlayPauseIcon.classList.remove('fa-play');
-            youtubePlayPauseIcon.classList.add('fa-pause');
-            progressBar.value = 0;
-            youtubeProgressBar.value = 0;
+            const track = activePlaylist[currentTrackIndex];
 
-            isPlayingRandomHostedMode = false; // Disable random mode if a specific song is played
+            songTitleSpan.textContent = track.title;
+            songArtistSpan.textContent = track.artist || track.uploader || 'Unknown Artist';
+            songThumbnailImg.src = track.thumbnail || "https://placehold.co/128x128/CCCCCC/FFFFFF?text=No+Track";
+            songThumbnailImg.onerror = () => {
+                songThumbnailImg.src = "https://placehold.co/128x128/CCCCCC/FFFFFF?text=Error";
+            };
 
-            if (song.type === 'youtube') {
-                setActivePlayerUI('youtube');
-                if (!youtubePlayer) {
-                    // Load YouTube IFrame API if not already loaded
-                    const tag = document.createElement('script');
-                    tag.src = "https://www.youtube.com/iframe_api";
-                    const firstScriptTag = document.getElementsByTagName('script')[0];
-                    firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+            // Ensure only one player UI is visible
+            localPlayerControls.classList.add('hidden');
+            youtubePlayerControls.classList.add('hidden');
+            youtubePlayerDiv.classList.add('hidden'); // Hide YouTube iframe div
+            songThumbnailImg.classList.remove('hidden'); // Show static thumbnail by default
 
-                    window.onYouTubeIframeAPIReady = () => {
-                        youtubePlayer = new YT.Player('youtube-player', {
-                            height: '0', // Hidden
-                            width: '0',  // Hidden
-                            videoId: song.videoId,
-                            playerVars: {
-                                'autoplay': 1,
-                                'controls': 0, // Hide controls for custom UI
-                                'modestbranding': 1,
-                                'rel': 0 // Disable related videos
-                            },
-                            events: {
-                                'onReady': (event) => {
-                                    event.target.seekTo(startTime);
-                                    event.target.playVideo();
-                                    updateYouTubeProgressBar();
-                                },
-                                'onStateChange': onYouTubePlayerStateChange
-                            }
-                        });
-                    };
+            audioPlayer.pause(); // Pause HTML audio before loading new source
+            if (youtubePlayer && youtubePlayerReady) youtubePlayer.pauseVideo(); // Pause YouTube video
+
+            if (track.type === 'audio') { // 'audio' type for hosted MP3s
+                localPlayerControls.classList.remove('hidden');
+                audioPlayer.src = track.url; // Use 'url' for hosted MP3s
+                audioPlayer.load();
+                if (autoPlay) {
+                    audioPlayer.play().catch(e => console.error("Error playing audio (type:audio):", e));
+                    playPauseIcon.classList.remove('fa-play');
+                    playPauseIcon.classList.add('fa-pause');
                 } else {
-                    youtubePlayer.loadVideoById(song.videoId, startTime);
-                    youtubePlayer.playVideo();
+                    playPauseIcon.classList.remove('fa-pause');
+                    playPauseIcon.classList.add('fa-play');
+                }
+                clearInterval(progressInterval);
+                progressInterval = setInterval(updateProgressBar, 1000);
+
+            } else if (track.type === 'youtube') {
+                youtubePlayerControls.classList.remove('hidden');
+                songThumbnailImg.classList.add('hidden'); // Hide static thumbnail
+                youtubePlayerDiv.classList.remove('hidden'); // Show YouTube iframe div
+
+                if (youtubePlayerReady) {
+                    youtubePlayer.loadVideoById(track.videoId, 0); // Load and play from start
+                    if (autoPlay) {
+                        youtubePlayer.playVideo();
+                        youtubePlayPauseIcon.classList.remove('fa-play');
+                        youtubePlayPauseIcon.classList.add('fa-pause');
+                    } else {
+                        youtubePlayer.pauseVideo(); // Ensure it's paused if not auto-playing
+                        youtubePlayPauseIcon.classList.remove('fa-pause');
+                        youtubePlayPauseIcon.classList.add('fa-play');
+                    }
+                } else {
+                    console.warn("YouTube player not ready, cannot play video yet.");
+                    showMessage("YouTube player is still loading. Please try again in a moment.", 3000);
+                    youtubePlayPauseIcon.classList.remove('fa-pause');
+                    youtubePlayPauseIcon.classList.add('fa-play');
                 }
             } else {
-                setActivePlayerUI('local');
-                audioPlayer.src = song.url;
-                audioPlayer.currentTime = startTime;
-                audioPlayer.play().catch(e => console.error("Error playing audio:", e));
+                console.warn("Unknown track type:", track.type);
+                showMessage("Unsupported track type. Skipping.", 3000);
+                if (!currentJamId || isHost || myPermissions.play) { // Ensure play permission or host
+                    playNextTrack(); // Skip unsupported track
+                }
+                return;
             }
-            renderPlaylist(); // Re-render to highlight current song
-
-            // If in a jam, host needs to sync state
-            if (jamId && socket.id === currentJamHostSid) {
-                updatePlaybackState(true, index, startTime);
+            
+            // Add 'current-song' class to the newly active playlist item
+            const newActive = document.getElementById(`playlist-item-${index}`);
+            if (newActive) {
+                newActive.classList.add('current-song');
             }
         }
 
@@ -703,24 +868,22 @@
             if (!isSeeking) {
                 progressBar.value = (audioPlayer.currentTime / audioPlayer.duration) * 100;
                 currentTimeSpan.textContent = formatTime(audioPlayer.currentTime);
-                durationSpan.textContent = formatTime(audioPlayer.duration);
+                totalTimeSpan.textContent = formatTime(audioPlayer.duration);
             }
         });
 
         audioPlayer.addEventListener('ended', () => {
-            playNextTrack();
+            if (!currentJamId || isHost || myPermissions.play) {
+                playNextTrack();
+            }
         });
 
         audioPlayer.addEventListener('play', () => {
-            isPlaying = true;
-            playPauseIcon.classList.remove('fa-play');
-            playPauseIcon.classList.add('fa-pause');
+            // Handled by playTrack or togglePlayPause
         });
 
         audioPlayer.addEventListener('pause', () => {
-            isPlaying = false;
-            playPauseIcon.classList.remove('fa-pause');
-            playPauseIcon.classList.add('fa-play');
+            // Handled by playTrack or togglePlayPause
         });
 
         audioPlayer.addEventListener('volumechange', () => {
@@ -728,84 +891,79 @@
         });
 
         // --- YouTube Player Event Handlers ---
-        function onYouTubePlayerStateChange(event) {
-            if (event.data === YT.PlayerState.PLAYING) {
-                isPlaying = true;
-                youtubePlayPauseIcon.classList.remove('fa-play');
-                youtubePlayPauseIcon.classList.add('fa-pause');
-                updateYouTubeProgressBar(); // Start updating progress bar
-            } else {
-                isPlaying = false;
-                youtubePlayPauseIcon.classList.remove('fa-pause');
-                youtubePlayPauseIcon.classList.add('fa-play');
-                if (event.data === YT.PlayerState.ENDED) {
-                    playNextTrack();
-                }
-            }
-            if (jamId && socket.id === currentJamHostSid) {
-                // Host syncs state on play/pause
-                updatePlaybackState(isPlaying, currentTrackIndex, youtubePlayer.getCurrentTime());
-            }
-        }
+        // onPlayerReady, onPlayerStateChange, onPlayerError are defined above in the global scope `window.onYouTubeIframeAPIReady`
 
-        function updateYouTubeProgressBar() {
-            if (youtubePlayer && isPlaying) {
-                if (!isSeeking) {
-                    const currentTime = youtubePlayer.getCurrentTime();
-                    const duration = youtubePlayer.getDuration();
-                    youtubeProgressBar.value = (currentTime / duration) * 100;
-                    youtubeCurrentTimeSpan.textContent = formatTime(currentTime);
-                    youtubeDurationSpan.textContent = formatTime(duration);
-                }
-                requestAnimationFrame(updateYouTubeProgressBar);
-            }
-        }
+        function updateProgressBar() {
+            const activePlaylist = currentJamId ? jamSessionPlaylist : playlist;
+            const currentTrack = activePlaylist[currentTrackIndex];
+            if (!currentTrack) return;
 
+            let progress = 0;
+            let duration = 0;
+            let currentTime = 0;
+
+            if (currentTrack.type === 'audio') {
+                currentTime = audioPlayer.currentTime;
+                duration = audioPlayer.duration;
+            } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
+                currentTime = youtubePlayer.getCurrentTime();
+                duration = youtubePlayer.getDuration();
+            }
+
+            if (duration > 0 && isFinite(duration)) {
+                progress = (currentTime / duration) * 100;
+            }
+
+            progressBar.value = progress;
+            youtubeProgressBar.value = progress;
+            currentTimeSpan.textContent = formatTime(currentTime);
+            totalTimeSpan.textContent = formatTime(duration);
+            youtubeCurrentTimeSpan.textContent = formatTime(currentTime);
+            youtubeDurationSpan.textContent = formatTime(duration);
+        }
 
         // --- Playback Controls ---
-        playPauseBtn.addEventListener('click', togglePlayPause);
+        playPauseButton.addEventListener('click', togglePlayPause);
         youtubePlayPauseBtn.addEventListener('click', togglePlayPause);
 
         function togglePlayPause() {
-            if (!songTitleSpan.textContent || songTitleSpan.textContent === 'No song selected') {
-                const activePlaylist = jamId ? jamSessionPlaylist : playlist;
-                if (activePlaylist.length > 0) {
-                    playTrack(0);
-                    return;
-                }
-                showMessage("No song to play. Add some songs to the playlist.");
+            const activePlaylist = currentJamId ? jamSessionPlaylist : playlist;
+            const currentTrack = activePlaylist[currentTrackIndex];
+
+            if (!currentTrack) {
+                showMessage("Playlist is empty. Add songs first!", 3000);
                 return;
             }
 
-            // Permission check
-            if (jamId && !myPermissions.play) {
+            if (currentJamId && !isHost && !myPermissions.play) {
                 showMessage("You do not have permission to control playback in this jam.", 3000);
                 return;
             }
 
-            let newIsPlayingState;
-            if (activePlayer === 'local') {
-                if (isPlaying) {
-                    audioPlayer.pause();
-                    newIsPlayingState = false;
-                } else {
+            let newIsPlaying;
+            if (currentTrack.type === 'audio') {
+                if (audioPlayer.paused) {
                     audioPlayer.play().catch(e => console.error("Error playing audio:", e));
-                    newIsPlayingState = true;
+                    newIsPlaying = true;
+                } else {
+                    audioPlayer.pause();
+                    newIsPlaying = false;
                 }
-            } else if (activePlayer === 'youtube') {
-                if (youtubePlayer) {
-                    if (isPlaying) {
-                        youtubePlayer.pauseVideo();
-                        newIsPlayingState = false;
-                    } else {
-                        youtubePlayer.playVideo();
-                        newIsPlayingState = true;
-                    }
+            } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
+                if (youtubePlayer.getPlayerState() === YT.PlayerState.PAUSED || youtubePlayer.getPlayerState() === YT.PlayerState.ENDED || youtubePlayer.getPlayerState() === YT.PlayerState.BUFFERING) {
+                    youtubePlayer.playVideo();
+                    newIsPlaying = true;
+                } else {
+                    youtubePlayer.pauseVideo();
+                    newIsPlaying = false;
                 }
+            } else {
+                showMessage("Unsupported track type.", 3000);
+                return;
             }
-            // Host syncs state on play/pause
-            if (jamId && socket.id === currentJamHostSid) {
-                updatePlaybackState(newIsPlayingState, currentTrackIndex, activePlayer === 'youtube' ? youtubePlayer.getCurrentTime() : audioPlayer.currentTime);
+
+            if (currentJamId && isHost) {
+                updateFirestorePlaybackState(newIsPlaying); // Sync state after host action
             }
         }
 
@@ -813,98 +971,197 @@
         youtubePrevBtn.addEventListener('click', playPrevTrack);
 
         function playPrevTrack() {
-            const activePlaylist = jamId ? jamSessionPlaylist : playlist;
-            if (activePlaylist.length === 0) return;
+            const activePlaylist = currentJamId ? jamSessionPlaylist : playlist;
+            if (activePlaylist.length === 0) {
+                showMessage("Playlist is empty. Cannot go back.", 2000);
+                return;
+            }
 
-            // Permission check
-            if (jamId && !myPermissions.play) {
+            if (currentJamId && !isHost && !myPermissions.play) {
                 showMessage("You do not have permission to control playback in this jam.", 3000);
                 return;
             }
 
             currentTrackIndex = (currentTrackIndex - 1 + activePlaylist.length) % activePlaylist.length;
-            playTrack(currentTrackIndex);
+            loadTrack(currentTrackIndex, true);
+            if (currentJamId && isHost) {
+                updateFirestorePlaybackState(true, currentTrackIndex, 0);
+            }
         }
 
         nextBtn.addEventListener('click', playNextTrack);
         youtubeNextBtn.addEventListener('click', playNextTrack);
 
         function playNextTrack() {
-            const activePlaylist = jamId ? jamSessionPlaylist : playlist;
+            const activePlaylist = currentJamId ? jamSessionPlaylist : playlist;
             if (activePlaylist.length === 0) {
                 resetPlayerUI();
+                showMessage("Playlist is empty.", 3000);
                 return;
             }
-            // Permission check
-            if (jamId && !myPermissions.play) {
+
+            if (currentJamId && !isHost && !myPermissions.play) {
                 showMessage("You do not have permission to control playback in this jam.", 3000);
                 return;
             }
 
             if (isPlayingRandomHostedMode) {
-                getUniqueRandomHostedSong(INITIAL_RANDOM_QUEUE_SIZE, true); // Get next random song
+                // If in random mode, replace current song and get a new random one
+                const currentSongId = activePlaylist[currentTrackIndex]?.id;
+                const indexToRemove = activePlaylist.findIndex(song => song.id === currentSongId);
+
+                if (indexToRemove !== -1) {
+                    activePlaylist.splice(indexToRemove, 1); // Remove the just played song
+                }
+
+                // Add a new random song if available
+                const newRandomSong = getUniqueRandomHostedSong(1, true); // Get one new song and add to end
+                if (newRandomSong.length === 0) {
+                    showMessage("No more unique random songs to add. Re-shuffling pool.", 3000);
+                    fullHostedSongsList = []; // Reset full list to allow re-selection
+                    getUniqueRandomHostedSong(INITIAL_RANDOM_QUEUE_SIZE); // Re-populate for next time
+                }
+
+                currentTrackIndex = 0; // Always play the first song in the shuffled queue
+                loadTrack(currentTrackIndex, true);
+
+                if (currentJamId && isHost) {
+                    updateFirestorePlaybackState(true, currentTrackIndex, 0); // Update Firestore
+                }
             } else {
-                currentTrackIndex = (currentTrackIndex + 1) % activePlaylist.length;
-                playTrack(currentTrackIndex);
+                let nextIndex = currentTrackIndex + 1;
+                if (nextIndex >= activePlaylist.length) {
+                    nextIndex = 0; // Loop back to the beginning
+                }
+                loadTrack(nextIndex, true);
+                if (currentJamId && isHost) {
+                    updateFirestorePlaybackState(true, nextIndex, 0);
+                }
             }
         }
 
+
         volumeSlider.addEventListener('input', (e) => {
             const volume = e.target.value / 100;
-            if (activePlayer === 'local') {
-                audioPlayer.volume = volume;
-            } else if (activePlayer === 'youtube' && youtubePlayer) {
+            audioPlayer.volume = volume;
+            if (youtubePlayerReady) {
+                youtubePlayer.setVolume(volume * 100); // YouTube API uses 0-100
+            }
+        });
+        
+        youtubeVolumeSlider.addEventListener('input', (e) => {
+            const volume = e.target.value / 100;
+            audioPlayer.volume = volume; // Sync local player volume
+            if (youtubePlayerReady) {
                 youtubePlayer.setVolume(volume * 100); // YouTube API uses 0-100
             }
         });
 
+
+        function isMediaReadyForSeek() {
+            const activePlaylist = currentJamId ? jamSessionPlaylist : playlist;
+            const currentTrack = activePlaylist[currentTrackIndex];
+            if (!currentTrack) {
+                showMessage("No song loaded.", 2000);
+                return false;
+            }
+
+            let mediaDuration = 0;
+            let ready = false;
+
+            if (currentTrack.type === 'audio') {
+                if (audioPlayer.readyState >= 3) {
+                    mediaDuration = audioPlayer.duration;
+                    ready = !isNaN(mediaDuration) && isFinite(mediaDuration) && mediaDuration > 0;
+                }
+            } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
+                const playerState = youtubePlayer.getPlayerState();
+                if (playerState !== YT.PlayerState.BUFFERING && playerState !== YT.PlayerState.UNSTARTED) {
+                    mediaDuration = youtubePlayer.getDuration();
+                    ready = !isNaN(mediaDuration) && isFinite(mediaDuration) && mediaDuration > 0;
+                }
+            }
+            if (!ready) {
+                console.warn("Media not ready for seek/jump. Current duration:", mediaDuration);
+                showMessage("Media is still loading. Please wait.", 2000);
+            }
+            return ready;
+        }
+
         progressBar.addEventListener('mousedown', () => isSeeking = true);
         progressBar.addEventListener('mouseup', (e) => {
             isSeeking = false;
-            // Permission check
-            if (jamId && !myPermissions.play) {
+            if (currentJamId && !isHost && !myPermissions.play) {
                 showMessage("You do not have permission to control playback in this jam.", 3000);
                 return;
             }
-            if (activePlayer === 'local') {
-                audioPlayer.currentTime = (e.target.value / 100) * audioPlayer.duration;
+            if (!isMediaReadyForSeek()) { return; }
+
+            const activePlaylist = currentJamId ? jamSessionPlaylist : playlist;
+            const currentTrack = activePlaylist[currentTrackIndex];
+
+            let player;
+            let totalDuration;
+
+            if (currentTrack.type === 'audio') {
+                player = audioPlayer;
+                totalDuration = audioPlayer.duration;
+            } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
+                player = youtubePlayer;
+                totalDuration = youtubePlayer.getDuration();
+            } else { return; }
+
+            const seekTime = (e.target.value / 100) * totalDuration;
+            if (currentTrack.type === 'audio') {
+                player.currentTime = seekTime;
+            } else {
+                player.seekTo(seekTime, true);
             }
-            if (jamId && socket.id === currentJamHostSid) {
-                updatePlaybackState(isPlaying, currentTrackIndex, audioPlayer.currentTime);
+            if (currentJamId && isHost) {
+                updateFirestorePlaybackState(); // Sync state after host action
             }
         });
-        progressBar.addEventListener('input', (e) => { // Update time display during seek
-            if (activePlayer === 'local' && audioPlayer.duration) {
-                currentTimeSpan.textContent = formatTime((e.target.value / 100) * audioPlayer.duration);
-            }
-        });
+        progressBar.addEventListener('input', updateProgressBar); // Update time display during seek
 
         youtubeProgressBar.addEventListener('mousedown', () => isSeeking = true);
         youtubeProgressBar.addEventListener('mouseup', (e) => {
             isSeeking = false;
-            // Permission check
-            if (jamId && !myPermissions.play) {
+            if (currentJamId && !isHost && !myPermissions.play) {
                 showMessage("You do not have permission to control playback in this jam.", 3000);
                 return;
             }
-            if (activePlayer === 'youtube' && youtubePlayer) {
-                const newTime = (e.target.value / 100) * youtubePlayer.getDuration();
-                youtubePlayer.seekTo(newTime, true);
-                if (jamId && socket.id === currentJamHostSid) {
-                    updatePlaybackState(isPlaying, currentTrackIndex, newTime);
-                }
+            if (!isMediaReadyForSeek()) { return; }
+
+            const activePlaylist = currentJamId ? jamSessionPlaylist : playlist;
+            const currentTrack = activePlaylist[currentTrackIndex];
+
+            let player;
+            let totalDuration;
+
+            if (currentTrack.type === 'audio') {
+                player = audioPlayer;
+                totalDuration = audioPlayer.duration;
+            } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
+                player = youtubePlayer;
+                totalDuration = youtubePlayer.getDuration();
+            } else { return; }
+
+            const seekTime = (e.target.value / 100) * totalDuration;
+            if (currentTrack.type === 'audio') {
+                player.currentTime = seekTime;
+            } else {
+                player.seekTo(seekTime, true);
+            }
+            if (currentJamId && isHost) {
+                updateFirestorePlaybackState(); // Sync state after host action
             }
         });
-        youtubeProgressBar.addEventListener('input', (e) => { // Update time display during seek
-            if (activePlayer === 'youtube' && youtubePlayer && youtubePlayer.getDuration()) {
-                youtubeCurrentTimeSpan.textContent = formatTime((e.target.value / 100) * youtubePlayer.getDuration());
-            }
-        });
+        youtubeProgressBar.addEventListener('input', updateProgressBar); // Update time display during seek
+
 
         // --- Search Functionality ---
         searchButton.addEventListener('click', () => {
-            // Permission check for adding songs
-            if (jamId && !myPermissions.add) {
+            if (currentJamId && !isHost && !myPermissions.add) {
                 showMessage("You do not have permission to add songs to this jam.", 3000);
                 return;
             }
@@ -933,12 +1190,12 @@
 
             try {
                 // Search hosted MP3s
-                const hostedResponse = await fetch(`/search_hosted_mp3s?query=${encodeURIComponent(query)}`);
+                const hostedResponse = await fetch(`${FLASK_BACKEND_URL}/search_hosted_mp3s?query=${encodeURIComponent(query)}`);
                 const hostedSongs = await hostedResponse.json();
                 renderSearchResults(hostedSongs, searchResultsContainer, 'audio');
 
                 // Search YouTube
-                const youtubeResponse = await fetch(`/Youtube?query=${encodeURIComponent(query)}`);
+                const youtubeResponse = await fetch(`${FLASK_BACKEND_URL}/Youtube?query=${encodeURIComponent(query)}`);
                 const youtubeVideos = await youtubeResponse.json();
                 renderSearchResults(youtubeVideos, youtubeSearchResultsModal, 'youtube');
 
@@ -1013,64 +1270,49 @@
         });
 
         async function addSongToCurrentPlaylist(song) {
-            // Permission check
-            if (jamId && !myPermissions.add) {
+            if (currentJamId && !isHost && !myPermissions.add) {
                 showMessage("You do not have permission to add songs to this jam.", 3000);
                 return;
             }
 
-            if (jamId) {
+            let newSong = { ...song }; // Create a copy to modify if needed
+
+            if (currentJamId) {
                 // If in a jam, send to server to add to shared playlist
                 if (socket) {
-                    socket.emit('add_song_to_jam', { jam_id: jamId, song: song });
+                    // Assign a unique ID if missing
+                    if (!newSong.id) {
+                        newSong.id = 'song_' + Date.now() + Math.random().toString(36).substring(2, 9);
+                    }
+                    socket.emit('add_song_to_jam', { jam_id: currentJamId, song: newSong });
                 } else {
                     showMessage("Not connected to jam session. Cannot add song.");
                 }
             } else {
                 // If not in a jam, add to local playlist
-                // For YouTube songs, treat as external playback for local playlist
-                if (song.type === 'youtube') {
-                    const playableSong = {
-                        id: song.id, // videoId is the ID
-                        title: song.title,
-                        artist: song.uploader || song.artist || 'Unknown',
-                        thumbnail: song.thumbnail,
-                        duration: song.duration,
-                        type: 'youtube', // Keep as YouTube type for player logic
-                        videoId: song.id // Store videoId for YouTube player
-                    };
-                    playlist.push(playableSong);
-                    showMessage(`Added "${song.title}" to your local playlist.`);
-                } else {
-                    // For hosted MP3s
-                    playlist.push({
-                        id: song.id || generateUniqueId(), // Ensure unique ID for local songs too
-                        title: song.title,
-                        artist: song.artist || 'Unknown',
-                        url: song.url,
-                        thumbnail: song.thumbnail,
-                        duration: song.duration,
-                        type: 'audio' // Mark as audio
-                    });
-                    showMessage(`Added "${song.title}" to your local playlist.`);
+                // Assign a unique ID if missing
+                if (!newSong.id) {
+                    newSong.id = 'song_' + Date.now() + Math.random().toString(36).substring(2, 9);
                 }
+                playlist.push(newSong);
+                showMessage(`Added "${newSong.title}" to your local playlist.`);
             }
             renderPlaylist();
             isPlayingRandomHostedMode = false; // Turn off random mode if user adds a specific song
         }
 
         function removeSongFromJam(songId) {
-            // Permission check
-            if (jamId && !myPermissions.remove) {
+            if (currentJamId && !isHost && !myPermissions.remove) {
                 showMessage("You do not have permission to remove songs from this jam.", 3000);
                 return;
             }
             if (socket) {
-                socket.emit('remove_song_from_jam', { jam_id: jamId, song_id: songId });
+                socket.emit('remove_song_from_jam', { jam_id: currentJamId, song_id: songId });
             } else {
                 showMessage("Not connected to jam session.", 3000);
             }
         }
+
 
         // --- Jam Session UI Controls ---
         createJamSessionDropdownBtn.addEventListener('click', () => {
@@ -1081,8 +1323,12 @@
             joinJamModal.classList.remove('hidden');
         });
 
-        closeCreateJamModalBtn.addEventListener('click', () => createJamModal.classList.add('hidden'));
-        closeJoinJamModalBtn.addEventListener('click', () => joinJamModal.classList.add('hidden'));
+        // Close buttons for modals
+        document.querySelector('#create-jam-modal .modal-close-button').addEventListener('click', () => createJamModal.classList.add('hidden'));
+        document.querySelector('#join-jam-modal .modal-close-button').addEventListener('click', () => joinJamModal.classList.add('hidden'));
+        document.querySelector('#youtube-modal .modal-close-button').addEventListener('click', () => youtubeModal.classList.add('hidden'));
+        document.querySelector('#manage-playlist-modal .modal-close-button').addEventListener('click', () => managePlaylistModal.classList.add('hidden'));
+
 
         createJamButton.addEventListener('click', () => {
             const jamName = createJamNameInput.value.trim();
@@ -1096,7 +1342,7 @@
         });
 
         joinJamButton.addEventListener('click', () => {
-            const enteredJamId = joinJamIdInput.value.trim(); // Use the corrected ID
+            const enteredJamId = joinJamIdInput.value.trim();
             const nickname = joinJamNicknameInput.value.trim() || 'Guest';
             if (enteredJamId && socket) {
                 socket.emit('join_session', { jam_id: enteredJamId, nickname: nickname });
@@ -1107,8 +1353,8 @@
         });
 
         shareJamLinkButton.addEventListener('click', () => {
-            if (jamId) {
-                const shareableLink = `${window.location.origin}/join/${jamId}`;
+            if (currentJamId) {
+                const shareableLink = `${window.location.origin}/join/${currentJamId}`;
                 
                 navigator.clipboard.writeText(shareableLink).then(() => {
                     showMessage("Shareable link copied to clipboard!", 2000);
@@ -1129,13 +1375,13 @@
         });
 
         copyJamIdButton.addEventListener('click', () => {
-            if (jamId) {
-                navigator.clipboard.writeText(jamId).then(() => {
+            if (currentJamId) {
+                navigator.clipboard.writeText(currentJamId).then(() => {
                     showMessage("Jam ID copied to clipboard!", 2000);
                 }).catch(err => {
                     console.error('Failed to copy text using navigator.clipboard:', err);
                     const el = document.createElement('textarea');
-                    el.value = jamId;
+                    el.value = currentJamId;
                     document.body.appendChild(el);
                     el.select();
                     document.execCommand('copy');
@@ -1148,303 +1394,361 @@
         });
 
         leaveJamButton.addEventListener('click', () => {
-            if (jamId && socket) {
-                if (confirm("Are you sure you want to leave this jam session?")) {
-                    socket.emit('disconnect'); // This will trigger server-side disconnect logic and session cleanup
-                    // Reset client-side state
-                    jamId = null;
-                    currentJamHostSid = null;
-                    currentJamName = '';
-                    myPermissions = { play: false, add: false, remove: false };
-                    jamSessionPlaylist = [];
-                    jamSessionParticipants = {};
-                    resetPlayerUI();
-                    renderPlaylist(); // Render local playlist (which will be empty)
-                    jamControlsDiv.classList.add('hidden'); // Hide jam controls
-                    participantsList.innerHTML = ''; // Clear participants list
-                    permissionsManagementDiv.classList.add('hidden'); // Hide permissions management
-                    permissionsList.innerHTML = ''; // Clear permissions list
-                    showMessage("Left jam session.");
-                }
+            if (currentJamId && socket) {
+                showConfirmation(
+                    "Leave Jam Session?",
+                    "Are you sure you want to leave this jam session? If you are the host, the session will end for everyone.",
+                    async (confirmed) => {
+                        if (confirmed) {
+                            try {
+                                const jamRef = doc(db, 'jam_sessions', currentJamId);
+                                const jamDoc = await getDoc(jamRef);
+                                if (jamDoc.exists) {
+                                    const jamData = jamDoc.data();
+                                    if (jamData.host_sid === socket.id) { // This is the host
+                                        await updateDoc(jamRef, {
+                                            is_active: false,
+                                            ended_at: new Date()
+                                        });
+                                        showMessage("You have ended the Jam Session for everyone.", 3000);
+                                    } else { // This is a participant
+                                        const updatedParticipants = jamData.participants || {};
+                                        delete updatedParticipants[socket.id]; // Remove self from participants map
+                                        await updateDoc(jamRef, {
+                                            participants: updatedParticipants
+                                        });
+                                        showMessage("You have left the Jam Session.", 3000);
+                                    }
+                                }
+                            } catch (e) {
+                                console.error("Error leaving jam session:", e);
+                                showMessage("Error leaving jam session. Please try again.", 3000);
+                            } finally {
+                                // Reset client-side state
+                                currentJamId = null;
+                                isHost = false;
+                                myNickname = '';
+                                jamSessionPlaylist = [];
+                                jamSessionParticipants = {}; // Reset to empty object
+                                myPermissions = { play: false, add: false, remove: false };
+                                hideJamSessionUI();
+                                resetPlayerUI();
+                                renderPlaylist(); // Show local playlist (which will be empty)
+                                clearInterval(syncInterval); // Stop any host sync interval
+                                if (unsubscribeJamListener) {
+                                    unsubscribeJamListener(); // Unsubscribe from Firestore
+                                    unsubscribeJamListener = null;
+                                }
+                                // Force a socket disconnect to clean up server-side if not already handled
+                                if (socket.connected) {
+                                    socket.disconnect();
+                                    setupSocketIO(); // Reinitialize socket for fresh connection
+                                }
+                            }
+                        }
+                    }
+                );
             } else {
                 showMessage("You are not currently in a jam session.", 3000);
             }
         });
 
 
-        // --- Socket.IO Event Listeners ---
-        function setupSocketIO() {
-            if (socket) {
-                socket.disconnect(); // Disconnect existing socket if any
-            }
-            socket = io(); // Connects to the host that served this page
+        // Existing Manage Playlist button listeners
+        managePlaylistButton.addEventListener('click', openManagePlaylistModal);
 
-            socket.on('connect', () => {
-                console.log('Socket.IO connected:', socket.id);
-                // Check if a jamId was passed from the server (e.g., from /join/<jam_id>)
-                const urlParams = new URLSearchParams(window.location.search);
-                const initialJamIdFromUrl = urlParams.get('jam_id') || (window.location.pathname.startsWith('/join/') ? window.location.pathname.substring(6) : null); // Check query param or path
-
-                if (initialJamIdFromUrl && initialJamIdFromUrl !== 'null') { // Ensure it's not the string 'null'
-                    const nickname = prompt("Enter your nickname to join the jam:");
-                    if (nickname) {
-                        joinJamIdInput.value = initialJamIdFromUrl; // Pre-fill jam ID
-                        joinJamNicknameInput.value = nickname; // Pre-fill nickname
-                        // Manually trigger join to allow user to confirm, or directly emit if desired
-                        // For now, let user click 'Join Jam' to initiate join_session
-                        // socket.emit('join_session', { jam_id: initialJamIdFromUrl, nickname: nickname });
-                        openJoinJamModal(); // Open modal with pre-filled info
-                    } else {
-                        showMessage("Nickname required to join the jam.");
-                    }
-                    // Clear the URL parameter so refreshing doesn't re-prompt
-                    const newUrl = window.location.origin + window.location.pathname.replace(`/join/${initialJamIdFromUrl}`, '');
-                    history.replaceState(null, '', newUrl);
-                }
-            });
-
-            socket.on('disconnect', () => {
-                console.log('Socket.IO disconnected.');
-                showMessage("Disconnected from server. Jam features may be affected.", 5000);
-                jamId = null;
-                currentJamHostSid = null;
-                currentJamName = '';
-                myPermissions = { play: false, add: false, remove: false };
-                jamSessionPlaylist = [];
-                jamSessionParticipants = {};
-                resetPlayerUI();
-                renderPlaylist();
-                jamControlsDiv.classList.add('hidden');
-                permissionsManagementDiv.classList.add('hidden');
-                participantsList.innerHTML = '';
-                permissionsList.innerHTML = '';
-            });
-
-            socket.on('session_created', (data) => {
-                jamId = data.jam_id;
-                currentJamHostSid = socket.id; // Mark current client as host
-                currentJamName = data.jam_name;
-                jamSessionPlaylist = data.playlist || []; // Host gets empty playlist
-                currentTrackIndex = data.initial_state.current_track_index || 0;
-                currentPlaybackTime = data.initial_state.current_playback_time || 0;
-                isPlaying = data.initial_state.is_playing || false;
-                myPermissions = data.participants[socket.id]?.permissions || { play: false, add: false, remove: false };
-                jamSessionParticipants = data.participants; // Full participants data
-                
-                jamIdDisplay.textContent = `Jam ID: ${jamId}`;
-                jamNameDisplay.textContent = `Jam Name: ${currentJamName}`;
-                jamControlsDiv.classList.remove('hidden');
-                showMessage(`Jam session "${currentJamName}" created! Share ID: ${jamId}`, 5000);
-
-                jamShareLinkInput.value = data.shareable_link;
-                shareLinkContainer.classList.remove('hidden');
-
-                renderPlaylist();
-                updateParticipantsUI();
-                updatePlayerControlPermissions(); // Apply permissions to UI controls
-            });
-
-            socket.on('session_join_success', (data) => {
-                jamId = data.jam_id;
-                currentJamHostSid = data.host_sid; // Get host SID from received data
-                currentJamName = data.jam_name;
-                jamSessionPlaylist = data.playlist || [];
-                currentTrackIndex = data.current_track_index || 0;
-                currentPlaybackTime = data.current_playback_time || 0;
-                isPlaying = data.is_playing || false;
-                myPermissions = data.participants[socket.id]?.permissions || { play: false, add: false, remove: false };
-                jamSessionParticipants = data.participants; // Full participants data
-                
-                jamIdDisplay.textContent = `Jam ID: ${jamId}`;
-                jamNameDisplay.textContent = `Jam Name: ${currentJamName}`;
-                jamControlsDiv.classList.remove('hidden');
-                showMessage(`Joined jam session "${currentJamName}". Welcome, ${data.nickname_used || 'Guest'}!`, 5000);
-
-                // Play current track if host is playing
-                if (isPlaying && jamSessionPlaylist.length > 0) {
-                    // Calculate synchronized time based on last synced timestamp
-                    const timeDiff = (Date.now() / 1000) - (data.last_synced_at || 0);
-                    let syncedTime = (currentPlaybackTime || 0) + timeDiff;
-                    
-                    // Ensure syncedTime doesn't exceed duration
-                    const currentSong = jamSessionPlaylist[currentTrackIndex];
-                    if (currentSong && currentSong.duration && syncedTime > currentSong.duration) {
-                        syncedTime = 0;
-                    }
-                    playTrack(currentTrackIndex, syncedTime);
+        // --- Add Song Functionality ---
+        async function getYouTubeVideoDetails(videoId) {
+            try {
+                showLoading();
+                const response = await fetch(`${FLASK_BACKEND_URL}/youtube_info?url=https://www.youtube.com/watch?v=${videoId}`);
+                const data = await response.json();
+                hideLoading();
+                if (response.ok && data) {
+                    return {
+                        id: data.video_id, // Ensure consistent ID
+                        title: data.title,
+                        artist: data.uploader,
+                        thumbnail: data.thumbnail || `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
+                        type: "youtube",
+                        videoId: data.video_id,
+                        duration: data.duration
+                    };
                 } else {
-                    resetPlayerUI();
+                    showMessage(`Could not find video details for ID: ${videoId}`, 4000);
+                    return null;
                 }
-                
-                renderPlaylist();
-                updateParticipantsUI();
-                updatePlayerControlPermissions(); // Apply permissions to UI controls
-            });
-
-            // Listener for when host updates playback state (play/pause/seek/track change)
-            socket.on('playback_state_updated', (data) => {
-                if (data.jam_id === jamId && socket.id !== currentJamHostSid) { // Only followers update from this
-                    const newPlaybackState = data.playback_state || {};
-                    const newPlaylist = data.playlist || [];
-
-                    const serverTrackIndex = newPlaybackState.current_track_index || 0;
-                    const serverPlaybackTime = newPlaybackState.current_playback_time || 0;
-                    const serverIsPlaying = newPlaybackState.is_playing || false;
-                    const serverTimestamp = newPlaybackState.timestamp || 0;
-
-                    // Update playlist if changed
-                    if (JSON.stringify(jamSessionPlaylist) !== JSON.stringify(newPlaylist)) {
-                        jamSessionPlaylist = newPlaylist;
-                        renderPlaylist();
-                    }
-
-                    // Calculate synchronized time based on timestamp
-                    const timeDiff = (Date.now() / 1000) - serverTimestamp;
-                    let syncedTime = serverPlaybackTime + timeDiff;
-
-                    const currentSong = jamSessionPlaylist[serverTrackIndex];
-                    if (currentSong && currentSong.duration && syncedTime > currentSong.duration) {
-                        syncedTime = 0;
-                    }
-
-                    // Only update if there's a significant change
-                    if (currentTrackIndex !== serverTrackIndex || isPlaying !== serverIsPlaying || Math.abs(currentPlaybackTime - syncedTime) > 1.5) {
-                        currentTrackIndex = serverTrackIndex;
-                        currentPlaybackTime = syncedTime;
-                        isPlaying = serverIsPlaying;
-
-                        if (isPlaying && jamSessionPlaylist.length > 0) {
-                            playTrack(currentTrackIndex, currentPlaybackTime);
-                        } else {
-                            if (activePlayer === 'local') {
-                                audioPlayer.pause();
-                                audioPlayer.currentTime = currentPlaybackTime;
-                            } else if (activePlayer === 'youtube' && youtubePlayer) {
-                                youtubePlayer.pauseVideo();
-                                youtubePlayer.seekTo(currentPlaybackTime, true);
-                            }
-                            resetPlayerUI(); // Just reset if not playing
-                            renderPlaylist(); // Update highlighting
-                        }
-                        console.log(`Follower synced: Index ${currentTrackIndex}, Time ${formatTime(currentPlaybackTime)}, Playing: ${isPlaying}`);
-                    }
-                }
-            });
-
-            // Listener for when playlist changes (add/remove song by host)
-            socket.on('playlist_updated', (data) => {
-                if (data.jam_id === jamId) {
-                    jamSessionPlaylist = data.playlist || [];
-                    renderPlaylist();
-                    // Playback state is handled by playback_state_updated for consistency
-                }
-            });
-
-
-            socket.on('session_ended', (data) => {
-                showMessage(`Jam session "${data.jam_id}" has ended: ${data.message}`, 5000);
-                jamId = null;
-                currentJamHostSid = null;
-                currentJamName = '';
-                myPermissions = { play: false, add: false, remove: false };
-                jamSessionPlaylist = [];
-                jamSessionParticipants = {};
-                resetPlayerUI();
-                renderPlaylist();
-                jamControlsDiv.classList.add('hidden');
-                permissionsManagementDiv.classList.add('hidden');
-                participantsList.innerHTML = '';
-                permissionsList.innerHTML = '';
-            });
-
-            socket.on('update_participants', (data) => {
-                if (data.jam_id === jamId) {
-                    jamSessionParticipants = data.participants; // Full participants object
-                    myPermissions = jamSessionParticipants[socket.id]?.permissions || { play: false, add: false, remove: false };
-                    updateParticipantsUI();
-                    updatePlayerControlPermissions(); // Re-apply permissions
-                }
-            });
-
-            socket.on('join_failed', (data) => {
-                console.error("Jam join failed:", data.message);
-                showMessage(`Failed to join jam: ${data.message}`);
-                jamId = null;
-                currentJamHostSid = null;
-                currentJamName = '';
-                myPermissions = { play: false, add: false, remove: false };
-                jamSessionPlaylist = [];
-                jamSessionParticipants = {};
-                resetPlayerUI();
-                renderPlaylist();
-                jamControlsDiv.classList.add('hidden');
-                permissionsManagementDiv.classList.add('hidden');
-                participantsList.innerHTML = '';
-                permissionsList.innerHTML = '';
-            });
-
-            socket.on('permission_denied', (data) => {
-                console.warn(`Permission denied for action: ${data.action} - ${data.message}`);
-                showMessage(`Permission Denied: ${data.message}`, 4000);
-            });
+            } catch (error) {
+                hideLoading();
+                console.error("Error fetching YouTube video details:", error);
+                showMessage(`Error fetching YouTube video details: ${error.message}`, 5000);
+                return null;
+            }
         }
 
-
-        // Host only: sends playback state to server
-        function updatePlaybackState(isPlayingOverride = null, trackIndexOverride = null, playbackTimeOverride = null) {
-            if (!jamId || socket.id !== currentJamHostSid || !socket) {
-                return; // Only host can update, and only if in a jam and socket is ready
+        async function searchYouTubeVideos(query) {
+            try {
+                showLoading();
+                const response = await fetch(`${FLASK_BACKEND_URL}/Youtube?query=${encodeURIComponent(query)}`);
+                const data = await response.json();
+                hideLoading();
+                if (response.ok && data.length > 0) {
+                    return data.map(item => ({
+                        id: item.id, // YouTube video ID is the unique ID
+                        type: "youtube", 
+                        title: item.title,
+                        artist: item.uploader,
+                        videoId: item.id,
+                        thumbnail: item.thumbnail || `https://img.youtube.com/vi/${item.id}/hqdefault.jpg`,
+                        duration: item.duration
+                    }));
+                } else {
+                    showMessage("No YouTube videos found for your search query.", 3000);
+                    return [];
+                }
+            } catch (error) {
+                hideLoading();
+                console.error("Error searching YouTube videos:", error);
+                showMessage(`Error searching YouTube: ${error.message}`, 5000);
+                return [];
             }
-
-            const activePlaylist = jamId ? jamSessionPlaylist : playlist; // Host manages its local playlist
-            const currentTrack = activePlaylist[currentTrackIndex]; // Get current track from client's active playlist
-            if (!currentTrack) return;
-
-            let currentTime = playbackTimeOverride !== null ? playbackTimeOverride : 0;
-            let isPlaying = isPlayingOverride !== null ? isPlayingOverride : false;
-            let trackIndex = trackIndexOverride !== null ? trackIndexOverride : currentTrackIndex;
-
-            if (activePlayer === 'local') {
-                currentTime = playbackTimeOverride !== null ? playbackTimeOverride : audioPlayer.currentTime;
-                isPlaying = isPlayingOverride !== null ? isPlayingOverride : !audioPlayer.paused;
-            } else if (activePlayer === 'youtube' && youtubePlayer) {
-                currentTime = playbackTimeOverride !== null ? playbackTimeOverride : youtubePlayer.getCurrentTime();
-                isPlaying = isPlayingOverride !== null ? isPlayingOverride : (youtubePlayer.getPlayerState() === YT.PlayerState.PLAYING);
+        }
+        
+        // This function is still needed for hosted MP3 search results
+        // I will keep it for now as it's present in the provided HTML.
+        function renderGoogleDriveSearchResults(results, targetContainer, directAddToPlaylist) {
+            targetContainer.innerHTML = '';
+            if (results.length === 0) {
+                targetContainer.innerHTML = '<p class="text-center text-gray-500 py-4">No songs found in this folder matching your query.</p>';
+                return;
             }
-            // If the current action is related to playing, ensure current playback time is recent
-            if (isPlayingOverride !== null || playbackTimeOverride !== null || trackIndexOverride !== null) {
-                 socket.emit('sync_playback_state', {
-                    jam_id: jamId,
-                    current_track_index: trackIndex,
-                    current_playback_time: currentTime,
-                    is_playing: isPlaying,
-                    playlist: activePlaylist // Host sends full playlist with every sync
+            results.forEach(song => {
+                const resultItem = document.createElement('div');
+                resultItem.classList.add('flex', 'items-center', 'space-x-3', 'p-2', 'bg-gray-50', 'rounded-lg', 'shadow-sm');
+                const thumb = document.createElement('img');
+                thumb.src = song.thumbnail || 'https://placehold.co/40x40/CCCCCC/FFFFFF?text=MP3';
+                thumb.alt = 'Song thumbnail';
+                thumb.classList.add('w-10', 'h-10', 'rounded-md', 'object-cover', 'flex-shrink-0');
+                const textContent = document.createElement('div');
+                textContent.classList.add('flex-grow', 'truncate');
+                textContent.innerHTML = `<span class="font-medium block truncate">${song.title}</span><span class="text-xs text-gray-500 block truncate">${song.artist}</span>`;
+                const addButton = document.createElement('button');
+                addButton.classList.add('ml-2', 'px-3', 'py-1', 'bg-green-500', 'text-white', 'rounded-md', 'hover:bg-green-600', 'transition-colors', 'duration-200', 'flex-shrink-0');
+                addButton.innerHTML = '<i class="fas fa-plus mr-1"></i>Add';
+                addButton.addEventListener('click', () => {
+                    if (isPlayingRandomHostedMode && directAddToPlaylist) {
+                        isPlayingRandomHostedMode = false;
+                        showMessage("Random play mode disabled. Adding song to playlist.", 3000);
+                    }
+                    addSongToCurrentPlaylist(song);
                 });
-                console.log(`Host synced state to server: Index ${trackIndex}, Time ${formatTime(currentTime)}, Playing: ${isPlaying}`);
+                resultItem.appendChild(thumb);
+                resultItem.appendChild(textContent);
+                resultItem.appendChild(addButton);
+                targetContainer.appendChild(resultItem);
+            });
+        }
+
+
+        // --- Random Playback ---
+        async function fetchAllHostedSongsForRandomPlayback() {
+            try {
+                showLoading();
+                const response = await fetch(`${FLASK_BACKEND_URL}/hosted_songs_manifest.json`);
+                const data = await response.json();
+                hideLoading();
+
+                if (response.ok && data.length > 0) {
+                    fullHostedSongsList = data;
+                    showMessage(`Prepared ${fullHostedSongsList.length} songs for random playback.`, 3000);
+                } else if (response.ok && data.length === 0) {
+                    showMessage("No hosted MP3s found for random playback.", 5000);
+                    fullHostedSongsList = [];
+                } else {
+                    showMessage(`Error preparing random hosted songs: ${data.error || 'Unknown error'}`, 5000);
+                    fullHostedSongsList = [];
+                }
+            } catch (error) {
+                hideLoading();
+                console.error("Network error fetching full hosted songs list:", error);
+                showMessage(`Network error: ${error.message}. Cannot prepare random songs.`, 6000);
+                fullHostedSongsList = [];
             }
         }
 
-        // --- Participant List UI & Permissions ---
-        function updateParticipantsUI() {
+        async function startDynamicRandomPlayback() {
+            if (currentJamId && !isHost && !myPermissions.add) {
+                showMessage("You do not have permission to initiate random playback in a Jam Session.", 3000);
+                return;
+            }
+            isPlayingRandomHostedMode = true;
+            const activePlaylist = currentJamId ? jamSessionPlaylist : playlist;
+            activePlaylist.length = 0; // Clear existing playlist
+
+            if (fullHostedSongsList.length === 0) {
+                await fetchAllHostedSongsForRandomPlayback();
+            }
+
+            if (fullHostedSongsList.length === 0) {
+                showMessage("No songs available to start random playback.", 5000);
+                resetPlayerUI();
+                return;
+            }
+
+            // Populate initial queue
+            for (let i = 0; i < INITIAL_RANDOM_QUEUE_SIZE; i++) {
+                const newSong = getUniqueRandomHostedSong();
+                if (newSong) {
+                    activePlaylist.push(newSong);
+                } else {
+                    break;
+                }
+            }
+            shuffleArray(activePlaylist); // Shuffle the initial batch
+
+            if (currentJamId && isHost) {
+                // If host, update Firestore playlist and sync state
+                try {
+                    await updateDoc(doc(db, 'jam_sessions', currentJamId), {
+                        playlist: activePlaylist,
+                        'playback_state.current_track_index': 0, // Always play the first song in random queue
+                        'playback_state.current_playback_time': 0,
+                        'playback_state.is_playing': true,
+                        'playback_state.timestamp': Date.now() / 1000
+                    });
+                } catch (e) {
+                    console.error("Error starting random playback in Firestore:", e);
+                    showMessage("Error starting random playback in jam session. Please try again.", 3000);
+                }
+            }
+
+            renderPlaylist();
+            if (activePlaylist.length > 0) {
+                currentTrackIndex = 0;
+                loadTrack(currentTrackIndex, true);
+                showMessage(`Starting random play with ${activePlaylist.length} songs!`, 3000);
+            } else {
+                showMessage("Could not populate initial random queue.", 3000);
+                resetPlayerUI();
+            }
+        }
+        
+        function getUniqueRandomHostedSong() {
+            if (fullHostedSongsList.length === 0) {
+                return null;
+            }
+            const activePlaylist = currentJamId ? jamSessionPlaylist : playlist;
+            const availableSongs = fullHostedSongsList.filter(
+                (song) => !activePlaylist.some((qSong) => qSong.id === song.id)
+            );
+
+            if (availableSongs.length === 0) {
+                console.warn("All unique random songs are currently in the queue. Re-using songs.");
+                return fullHostedSongsList[Math.floor(Math.random() * fullHostedSongsList.length)]; // Pick any if no unique left
+            }
+            return availableSongs[Math.floor(Math.random() * availableSongs.length)];
+        }
+
+
+        // --- Jam Session UI & Logic ---
+        function enableHostControls(enable) {
+            // Playback controls
+            const playbackControls = [playPauseButton, prevBtn, nextBtn, progressBar, youtubePlayPauseBtn, youtubePrevBtn, youtubeNextBtn, youtubeProgressBar];
+            playbackControls.forEach(btn => {
+                if (btn) {
+                    btn.disabled = !(enable || myPermissions.play);
+                    if (btn.disabled) btn.classList.add('opacity-70', 'cursor-not-allowed');
+                    else btn.classList.remove('opacity-70', 'cursor-not-allowed');
+                }
+            });
+            // Volume slider is always enabled (local control)
+            volumeSlider.disabled = false;
+            volumeSlider.classList.remove('opacity-70', 'cursor-not-allowed');
+            youtubeVolumeSlider.disabled = false;
+            youtubeVolumeSlider.classList.remove('opacity-70', 'cursor-not-allowed');
+
+
+            // Add Songs Button & Search Modal Trigger
+            searchButton.disabled = !(enable || myPermissions.add);
+            if (searchButton.disabled) searchButton.classList.add('opacity-70', 'cursor-not-allowed');
+            else searchButton.classList.remove('opacity-70', 'cursor-not-allowed');
+
+            // Random Hosted Songs button
+            playRandomHostedSongsButton.disabled = !(enable || myPermissions.add); // Assuming adding songs to playlist is required for random
+            if (playRandomHostedSongsButton.disabled) playRandomHostedSongsButton.classList.add('opacity-70', 'cursor-not-allowed');
+            else playRandomHostedSongsButton.classList.remove('opacity-70', 'cursor-not-allowed');
+            
+            // Manage Playlist button
+            managePlaylistButton.disabled = !(enable || myPermissions.remove); // Assuming manage implies remove/add
+            if (managePlaylistButton.disabled) managePlaylistButton.classList.add('opacity-70', 'cursor-not-allowed');
+            else managePlaylistButton.classList.remove('opacity-70', 'cursor-not-allowed');
+
+            // Specific controls within YouTube modal related to adding (if they exist)
+            // Assuming addFromUrlButton and performYoutubeTextSearchButton are for adding songs
+            if (addFromUrlButton) {
+                addFromUrlButton.disabled = !(enable || myPermissions.add);
+                if (addFromUrlButton.disabled) addFromUrlButton.classList.add('opacity-70', 'cursor-not-allowed');
+                else addFromUrlButton.classList.remove('opacity-70', 'cursor-not-allowed');
+            }
+            if (performYoutubeTextSearchButton) {
+                performYoutubeTextSearchButton.disabled = !(enable || myPermissions.add);
+                if (performYoutubeTextSearchButton.disabled) performYoutubeTextSearchButton.classList.add('opacity-70', 'cursor-not-allowed');
+                else performYoutubeTextSearchButton.classList.remove('opacity-70', 'cursor-not-allowed');
+            }
+            if (youtubeUrlInputModal) youtubeUrlInputModal.disabled = !(enable || myPermissions.add);
+            if (youtubeTextSearchInput) youtubeTextSearchInput.disabled = !(enable || myPermissions.add);
+            if (searchInput) searchInput.disabled = !(enable || myPermissions.add);
+
+
+            // Playlist items' clickability (for playing)
+            playlistContainer.querySelectorAll('li').forEach(li => {
+                const removeButton = li.querySelector('.remove-song-btn');
+                if (enable || myPermissions.play) {
+                    li.classList.remove('opacity-70', 'cursor-not-allowed');
+                } else {
+                    li.classList.add('opacity-70', 'cursor-not-allowed');
+                }
+                // Handle remove button visibility/disability within playlist items
+                if (removeButton) {
+                    if (enable || myPermissions.remove) {
+                        removeButton.classList.remove('opacity-70', 'cursor-not-allowed');
+                        removeButton.disabled = false;
+                    } else {
+                        removeButton.classList.add('opacity-70', 'cursor-not-allowed');
+                        removeButton.disabled = true;
+                    }
+                }
+            });
+        }
+
+        function showJamSessionUI(jamName, participants) {
+            jamControlsDiv.classList.remove('hidden');
+            jamNameDisplay.textContent = jamName;
+            jamIdDisplay.textContent = `Jam ID: ${currentJamId}`; // Display current jam ID
+            participantsCount.textContent = `Participants (${participants.length}):`;
+
             participantsList.innerHTML = '';
             permissionsList.innerHTML = ''; // Clear permissions list each time
 
-            const participantEntries = Object.entries(jamSessionParticipants); // Get [sid, {data}] pairs
+            const participantEntries = Object.entries(participants); // Get [sid, {data}] pairs
 
             participantEntries.forEach(([sid, data]) => {
                 const isMe = (sid === socket.id);
-                const isHost = (sid === currentJamHostSid);
+                const isCurrentHost = (sid === jamSessionParticipants[socket.id]?.host_sid); // This might be wrong logic, host_sid is stored at jam level.
+                // Re-evaluate: isHost is a global state. Check if `sid` matches `currentJamHostSid`.
+                const participantIsHost = (sid === currentJamHostSid);
+
                 const nickname = data.nickname || 'Unknown';
                 const permissions = data.permissions || { play: false, add: false, remove: false };
 
                 // Display participant in general list
                 const participantLi = document.createElement('li');
                 participantLi.className = 'py-1 text-gray-700 dark:text-gray-300';
-                participantLi.textContent = `${nickname} ${isMe ? '(You)' : ''} ${isHost ? '(Host)' : ''}`;
+                participantLi.textContent = `${nickname} ${isMe ? '(You)' : ''} ${participantIsHost ? '(Host)' : ''}`;
                 participantsList.appendChild(participantLi);
 
                 // If current client is the host, render permission controls for others
-                if (socket.id === currentJamHostSid && !isMe) { // Host can manage others' permissions
+                if (isHost && !isMe) { // Host can manage others' permissions
                     const permissionItem = document.createElement('div');
                     permissionItem.className = 'flex items-center space-x-2 bg-gray-100 p-2 rounded-md mb-1';
                     permissionItem.innerHTML = `
@@ -1472,7 +1776,7 @@
                             const isChecked = event.target.checked;
                             const updatedPerms = { [permissionType]: isChecked };
                             socket.emit('update_participant_permissions', {
-                                jam_id: jamId,
+                                jam_id: currentJamId,
                                 target_sid: targetSid,
                                 permissions: updatedPerms
                             });
@@ -1482,176 +1786,399 @@
             });
 
             // Show/hide permissions management section based on host status
-            if (socket.id === currentJamHostSid) {
+            if (isHost) {
                 permissionsManagementDiv.classList.remove('hidden');
             } else {
                 permissionsManagementDiv.classList.add('hidden');
             }
-
-            // Update the count
-            document.getElementById('participants-count').textContent = `Participants (${participantEntries.length}):`;
         }
 
-        // Function to enable/disable UI controls based on myPermissions
-        function updatePlayerControlPermissions() {
-            const isHost = (socket.id === currentJamHostSid);
+        function hideJamSessionUI() {
+            jamControlsDiv.classList.add('hidden');
+            jamNameDisplay.textContent = '';
+            jamIdDisplay.textContent = 'Jam ID: Loading...';
+            participantsCount.textContent = 'Participants (0):';
+            participantsList.innerHTML = '';
+            permissionsManagementDiv.classList.add('hidden');
+            permissionsList.innerHTML = '';
+            enableHostControls(true); // Re-enable controls for local playback outside a jam
+        }
 
-            // Playback controls (play/pause, prev, next, progress bar)
-            const playbackControls = [playPauseBtn, prevBtn, nextBtn, progressBar, youtubePlayPauseBtn, youtubePrevBtn, youtubeNextBtn, youtubeProgressBar];
-            playbackControls.forEach(btn => {
-                if (btn) {
-                    btn.disabled = !(isHost || myPermissions.play);
-                    if (btn.disabled) btn.classList.add('opacity-70', 'cursor-not-allowed');
-                    else btn.classList.remove('opacity-70', 'cursor-not-allowed');
-                }
-            });
-            // Volume slider is always enabled (local control)
-            volumeSlider.disabled = false;
-            volumeSlider.classList.remove('opacity-70', 'cursor-not-allowed');
-            youtubeVolumeSlider.disabled = false;
-            youtubeVolumeSlider.classList.remove('opacity-70', 'cursor-not-allowed');
+        // --- Firestore Real-time Synchronization ---
+        function subscribeToJamSessionUpdates(jamId) {
+            if (unsubscribeJamListener) {
+                unsubscribeJamListener(); // Unsubscribe from previous listener if any
+            }
+            if (!db) {
+                console.error("Firestore DB not initialized. Cannot subscribe to updates.");
+                return;
+            }
 
-            // Add Songs Button & Search Modal Trigger
-            searchButton.disabled = !(isHost || myPermissions.add);
-            if (searchButton.disabled) searchButton.classList.add('opacity-70', 'cursor-not-allowed');
-            else searchButton.classList.remove('opacity-70', 'cursor-not-allowed');
+            const jamRef = doc(db, 'jam_sessions', jamId);
+            unsubscribeJamListener = onSnapshot(jamRef, (docSnapshot) => {
+                if (docSnapshot.exists && docSnapshot.data().is_active) {
+                    const jamData = docSnapshot.data();
+                    console.log("Firestore Jam Data Update:", jamData);
 
-            // Random Hosted Songs button
-            playRandomHostedSongsButton.disabled = !(isHost || myPermissions.add); // Assuming adding songs to playlist is required for random
-            if (playRandomHostedSongsButton.disabled) playRandomHostedSongsButton.classList.add('opacity-70', 'cursor-not-allowed');
-            else playRandomHostedSongsButton.classList.remove('opacity-70', 'cursor-not-allowed');
+                    // Update client's role and nickname in case they reconnected or host changed
+                    isHost = (jamData.host_sid === socket.id);
+                    currentJamHostSid = jamData.host_sid;
+                    
+                    // Update participants and current client's permissions
+                    jamSessionParticipants = jamData.participants || {};
+                    myPermissions = jamSessionParticipants[socket.id]?.permissions || { play: false, add: false, remove: false };
 
+                    // Update UI for jam session info
+                    showJamSessionUI(jamData.name || `Session ${jamId}`, Object.values(jamSessionParticipants).map(p => p.nickname)); // Pass array of nicknames
+                    
+                    // Render playlist (host or guest)
+                    jamSessionPlaylist = jamData.playlist || [];
+                    renderPlaylist();
+                    updatePlayerControlPermissions(); // Re-apply permissions after UI updates
 
-            // Playlist items' clickability (for playing)
-            playlistContainer.querySelectorAll('li').forEach(li => {
-                if (isHost || myPermissions.play) {
-                    li.classList.remove('opacity-70', 'cursor-not-allowed');
+                    const playbackState = jamData.playback_state || {};
+                    const newTrackIndex = playbackState.current_track_index || 0;
+                    const newPlaybackTime = playbackState.current_playback_time || 0;
+                    const newIsPlaying = playbackState.is_playing || false;
+                    const lastSyncedAt = playbackState.timestamp || 0;
+
+                    // Apply playback state if not host, or if host just initialized/reconnected
+                    if (!isHost) {
+                        // Load track if it's different or if player is empty
+                        const currentTrack = jamSessionPlaylist[newTrackIndex];
+                        const needsTrackLoad = (newTrackIndex !== currentTrackIndex || 
+                                                (currentTrack && currentTrack.type === 'youtube' && youtubePlayer && youtubePlayer.getVideoData().video_id !== currentTrack.videoId) ||
+                                                (currentTrack && currentTrack.type === 'audio' && audioPlayer.src !== currentTrack.url));
+
+                        if (needsTrackLoad) {
+                            currentTrackIndex = newTrackIndex;
+                            loadTrack(currentTrackIndex, newIsPlaying);
+                        }
+
+                        // Latency correction
+                        const networkDelay = (Date.now() / 1000) - lastSyncedAt;
+                        let targetTime = newPlaybackTime + networkDelay + 0.1; // Small buffer
+
+                        if (currentTrack) {
+                            let player;
+                            let duration;
+                            if (currentTrack.type === 'audio') {
+                                player = audioPlayer;
+                                duration = audioPlayer.duration;
+                            } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
+                                player = youtubePlayer;
+                                duration = youtubePlayer.getDuration();
+                            }
+                            
+                            if (player && !isNaN(duration) && isFinite(duration) && duration > 0) {
+                                targetTime = Math.min(Math.max(0, targetTime), duration);
+
+                                let currentTime = 0;
+                                if (currentTrack.type === 'audio') {
+                                    currentTime = audioPlayer.currentTime;
+                                } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
+                                    currentTime = youtubePlayer.getCurrentTime();
+                                }
+                                const timeDifference = Math.abs(currentTime - targetTime);
+
+                                if (timeDifference > 1.0) { // Seek if more than 1 second out of sync
+                                    console.log(`Follower Seeking: current ${currentTime.toFixed(2)}, target ${targetTime.toFixed(2)}, diff ${timeDifference.toFixed(2)}, delay ${networkDelay.toFixed(2)}`);
+                                    if (currentTrack.type === 'audio') {
+                                        player.currentTime = targetTime;
+                                    } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
+                                        player.seekTo(targetTime, true);
+                                    }
+                                }
+
+                                // Play/pause state sync
+                                if (newIsPlaying && (player.paused || (currentTrack.type === 'youtube' && player.getPlayerState() !== YT.PlayerState.PLAYING))) {
+                                    if (currentTrack.type === 'audio') {
+                                        player.play().catch(e => console.error("Error playing audio (guest):", e));
+                                    } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
+                                        youtubePlayer.playVideo();
+                                    }
+                                } else if (!newIsPlaying && (!player.paused || (currentTrack.type === 'youtube' && player.getPlayerState() === YT.PlayerState.PLAYING))) {
+                                    if (currentTrack.type === 'audio') {
+                                        player.pause();
+                                    } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
+                                        youtubePlayer.pauseVideo();
+                                    }
+                                }
+                            } else {
+                                console.warn("Guest: Player or duration not ready for sync.");
+                            }
+                        }
+                        // Permissions for guests are set by host, enableHostControls will disable controls if not host
+                        enableHostControls(false); 
+                        showMessage("Syncing with Jam Session!", 1000);
+                    } else { // If host, just ensure UI reflects latest state and controls are enabled
+                        enableHostControls(true);
+                    }
+
                 } else {
-                    li.classList.add('opacity-70', 'cursor-not-allowed');
+                    // Session ended or document no longer exists in Firestore
+                    showMessage(`Jam Session "${jamId}" has ended.`, 5000);
+                    currentJamId = null;
+                    isHost = false;
+                    myNickname = '';
+                    jamSessionPlaylist = [];
+                    jamSessionParticipants = {}; // Reset to empty object
+                    myPermissions = { play: false, add: false, remove: false };
+                    hideJamSessionUI();
+                    resetPlayerUI();
+                    renderPlaylist(); // Show local playlist
+                    clearInterval(syncInterval); // Stop any host sync interval
+                    if (unsubscribeJamListener) unsubscribeJamListener();
+                    // Force a socket disconnect to clean up server-side if not already handled
+                    if (socket.connected) {
+                        socket.disconnect();
+                        setupSocketIO(); // Reinitialize socket for fresh connection
+                    }
+                }
+            }, (error) => {
+                console.error("Error listening to jam session updates:", error);
+                showMessage("Lost connection to Jam Session. Please try rejoining.", 5000);
+                currentJamId = null;
+                isHost = false;
+                myNickname = '';
+                jamSessionPlaylist = [];
+                jamSessionParticipants = {};
+                myPermissions = { play: false, add: false, remove: false };
+                hideJamSessionUI();
+                resetPlayerUI();
+                renderPlaylist();
+                clearInterval(syncInterval);
+                if (unsubscribeJamListener) unsubscribeJamListener();
+                if (socket.connected) {
+                    socket.disconnect();
+                    setupSocketIO(); // Reinitialize socket for fresh connection
                 }
             });
-
-            // Playlist items' remove buttons (rendered dynamically, but re-evaluate)
-            renderPlaylist(); // Rerender playlist to update remove buttons correctly
         }
 
-        // --- Play Random Hosted Songs ---
-        playRandomHostedSongsButton.addEventListener('click', async () => {
-            // Permission check
-            if (jamId && !myPermissions.add) { // Assuming random play adds to playlist, so needs 'add' perm
-                showMessage("You do not have permission to play random songs in this jam.", 3000);
-                return;
-            }
+        // Host-only function to update Firestore with current playback state
+        async function updateFirestorePlaybackState(isPlayingOverride = null, trackIndexOverride = null, playbackTimeOverride = null) {
+            if (!currentJamId || !isHost || !db) return;
 
-            if (isLoadingRandomSongs) {
-                showMessage("Generating random playlist. Please wait...", 2000);
-                return;
-            }
-            // Logic for playing random hosted songs outside a jam session is removed
-            // as this feature is primarily for host to manage jam playlist.
-            // If the user wants this outside a jam, it implies local state, which doesn't need permissions.
-            // For now, I'm keeping it only for jam host/add permission
-            if (!jamId || socket.id !== currentJamHostSid) { // This should ideally be handled by permissions check above
-                showMessage("Only the host can start random playback in a Jam Session.", 3000);
-                return;
-            }
+            const currentTrack = jamSessionPlaylist[currentTrackIndex]; // Host manages its local playlist (jamSessionPlaylist)
+            if (!currentTrack) return;
 
-            isLoadingRandomSongs = true;
-            playRandomHostedSongsButton.disabled = true;
-            playRandomHostedSongsButton.classList.add('opacity-50', 'cursor-not-allowed');
-            showMessage("Generating random playlist, please wait...");
+            let currentTime = playbackTimeOverride !== null ? playbackTimeOverride : 0;
+            let isPlaying = isPlayingOverride !== null ? isPlayingOverride : false;
+            let trackIndex = trackIndexOverride !== null ? trackIndexOverride : currentTrackIndex;
+
+            if (currentTrack.type === 'audio') {
+                currentTime = playbackTimeOverride !== null ? playbackTimeOverride : audioPlayer.currentTime;
+                isPlaying = isPlayingOverride !== null ? isPlayingOverride : !audioPlayer.paused;
+            } else if (currentTrack.type === 'youtube' && youtubePlayerReady) {
+                currentTime = playbackTimeOverride !== null ? playbackTimeOverride : youtubePlayer.getCurrentTime();
+                isPlaying = isPlayingOverride !== null ? isPlayingOverride : (youtubePlayer.getPlayerState() === YT.PlayerState.PLAYING);
+            }
 
             try {
-                if (fullHostedSongsList.length === 0) {
-                    const response = await fetch('/hosted_songs_manifest.json');
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                    fullHostedSongsList = await response.json();
-                    if (fullHostedSongsList.length === 0) {
-                        showMessage("No hosted MP3s found. Cannot generate random playlist.", 4000);
-                        isLoadingRandomSongs = false;
-                        playRandomHostedSongsButton.disabled = false;
-                        playRandomHostedSongsButton.classList.remove('opacity-50', 'cursor-not-allowed');
-                        return;
-                    }
-                }
+                await updateDoc(doc(db, 'jam_sessions', currentJamId), {
+                    'playback_state.current_track_index': trackIndex,
+                    'playback_state.current_playback_time': currentTime,
+                    'playback_state.is_playing': isPlaying,
+                    'playback_state.timestamp': Date.now() / 1000 // Client timestamp for latency calculation
+                });
+                // No explicit socket emit from host here, as Firestore listener handles propagation
+            } catch (e) {
+                console.error("Error updating Firestore playback state:", e);
+                showMessage("Failed to sync playback state to jam. Check connection.", 3000);
+            }
+        }
 
-                jamSessionPlaylist = []; // Clear current jam playlist
-                isPlayingRandomHostedMode = true;
-                getUniqueRandomHostedSong(INITIAL_RANDOM_QUEUE_SIZE);
-                currentTrackIndex = 0;
-                if (jamSessionPlaylist.length > 0) {
-                    // Host initiates playback and updates state
-                    updatePlaybackState(true, 0, 0); // Force playing the first random track
-                    showMessage(`Generated a random playlist of ${jamSessionPlaylist.length} songs!`, 3000);
-                } else {
-                    showMessage("Could not generate a random playlist. Try again.", 3000);
-                }
 
-            } catch (error) {
-                console.error("Error generating random playlist:", error);
-                showMessage("Failed to generate random playlist. See console for details.", 5000);
-            } finally {
-                isLoadingRandomSongs = false;
-                playRandomHostedSongsButton.disabled = false;
-                playRandomHostedSongsButton.classList.remove('opacity-50', 'cursor-not-allowed');
+        // --- Event Listeners ---
+
+        // Handle Create Jam Session button within the modal
+        createJamButton.addEventListener('click', async () => {
+            if (!userId) {
+                showMessage("Authentication not ready. Please wait or refresh.", 3000);
+                return;
+            }
+            const jamName = createJamNameInput.value.trim();
+            const nickname = createJamNicknameInput.value.trim();
+            if (!nickname) {
+                showMessage("Please enter your nickname to create a session.", 3000);
+                return;
+            }
+            myNickname = nickname;
+            
+            // Emit to backend, backend saves to Firestore and returns jam_id
+            socket.emit('create_session', { jam_name: jamName, nickname: nickname });
+            // The 'session_created' event will be received from the backend, which will then trigger Firestore listener
+        });
+
+        // Handle Copy Share Link button
+        copyShareLinkButton.addEventListener('click', () => {
+            const link = jamShareLinkInput.value;
+            if (link) {
+                // Using modern clipboard API with fallback
+                navigator.clipboard.writeText(link).then(() => {
+                    showMessage("Link copied to clipboard!", 2000);
+                }).catch(err => {
+                    console.error('Failed to copy text using navigator.clipboard:', err);
+                    // Fallback for older browsers / restricted environments
+                    const el = document.createElement('textarea');
+                    el.value = link;
+                    document.body.appendChild(el);
+                    el.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(el);
+                    showMessage("Link copied to clipboard (fallback)!", 2000);
+                });
             }
         });
 
-        function getUniqueRandomHostedSong(count, addToExisting = false) {
-            const availableSongs = fullHostedSongsList.filter(s => !jamSessionPlaylist.some(p => p.id === s.id));
-            if (availableSongs.length === 0) {
-                if (jamSessionPlaylist.length > 0) {
-                    jamSessionPlaylist = []; // Clear for fresh random selection
-                    showMessage("All available unique songs were played. Restarting random queue.", 3000);
-                    getUniqueRandomHostedSong(INITIAL_RANDOM_QUEUE_SIZE); // Recursively call for a new set
-                    return;
-                } else {
-                    showMessage("No unique random songs available from the manifest.", 3000);
-                    isPlayingRandomHostedMode = false;
-                    return;
-                }
+        // Handle Join Jam Session button within the modal
+        joinJamButton.addEventListener('click', async () => {
+            if (!userId) {
+                showMessage("Authentication not ready. Please wait or refresh.", 3000);
+                return;
+            }
+            const nickname = joinJamNicknameInput.value.trim();
+            const enteredJamId = joinJamIdInput.value.trim(); // Ensure this is populated from the input
+            if (!nickname) {
+                showMessage("Please enter your nickname to join the session.", 3000);
+                return;
+            }
+            if (!enteredJamId) {
+                showMessage("Please enter a Jam ID.", 3000);
+                return;
             }
 
-            const songsToAdd = [];
-            for (let i = 0; i < count && availableSongs.length > 0; i++) {
-                const randomIndex = Math.floor(Math.random() * availableSongs.length);
-                songsToAdd.push(availableSongs.splice(randomIndex, 1)[0]);
+            myNickname = nickname;
+            currentJamId = enteredJamId; // Set the jamId to be joined
+
+            // Emit to backend, backend joins in Firestore
+            socket.emit('join_session', { jam_id: currentJamId, nickname: nickname });
+            joinJamModal.classList.add('hidden');
+            // Firestore listener will update the state
+        });
+
+        // Existing Manage Playlist button listeners
+        managePlaylistButton.addEventListener('click', openManagePlaylistModal);
+
+        // Event listeners for elements now in their respective modals
+        // (Google Drive Search is now part of the main search modal, not separate)
+        // This button and its corresponding input/results container are removed from the current HTML.
+        // I'll keep the function definition in case it's used elsewhere, but remove the event listener.
+        // performGoogledriveMainSearchButton.addEventListener('click', async () => {
+        //     const query = googledriveMainSearchInput.value.trim();
+        //     if (isPlayingRandomHostedMode) { // Changed from Drive to Hosted
+        //         isPlayingRandomHostedMode = false;
+        //         showMessage("Random play mode disabled. Adding search results to playlist.", 3000);
+        //     }
+        //     await searchSongsInGoogleDriveFolder(PUBLIC_TELUGU_SONGS_FOLDER_ID, query, googledriveMainSearchResults, true);
+        // });
+
+        addFromUrlButton.addEventListener('click', async () => {
+            const url = youtubeUrlInputModal.value.trim();
+            if (!url) { showMessage("Please enter a YouTube URL.", 2000); return; }
+
+            if (currentJamId && !isHost && !myPermissions.add) {
+                showMessage("You do not have permission to add songs to this jam.", 3000);
+                return;
             }
 
-            if (addToExisting) {
-                jamSessionPlaylist.push(...songsToAdd);
-            } else {
-                jamSessionPlaylist = songsToAdd;
+            const videoId = extractYouTubeVideoId(url);
+            if (!videoId) { showMessage("Invalid YouTube URL.", 2000); return; }
+            const track = await getYouTubeVideoDetails(videoId);
+            if (track) {
+                addSongToCurrentPlaylist(track);
+                closeYoutubeModal();
             }
-            renderPlaylist();
-        }
+        });
 
-        // --- Initial Load Logic ---
-        document.addEventListener('DOMContentLoaded', async () => {
-            // Setup Socket.IO immediately
-            setupSocketIO();
+        performYoutubeTextSearchButton.addEventListener('click', async () => {
+            const query = youtubeTextSearchInput.value.trim();
+            if (!query) { showMessage("Please enter a search query.", 2000); return; }
+
+            if (currentJamId && !isHost && !myPermissions.add) {
+                showMessage("You do not have permission to add songs to this jam.", 3000);
+                return;
+            }
+
+            const results = await searchYouTubeVideos(query);
+            renderYouTubeSearchResults(results);
+        });
+
+        playRandomHostedSongsButton.addEventListener('click', async () => { // Renamed from Drive to Hosted
+            if (currentJamId && !isHost && !myPermissions.add) {
+                showMessage("You do not have permission to initiate random playback in a Jam Session.", 3000);
+                return;
+            }
+            // Removed the Google Drive folder ID check here, as it's now about hosted_songs_manifest.json
+            await startDynamicRandomPlayback();
+        });
+
+
+        // Function to handle initial load and jam join
+        async function handleInitialLoadAndJamJoin() {
+            renderPlaylist(); // Render initial empty playlist or saved local one
             loadYouTubeAPI(); // Load YouTube IFrame API
 
-            // Initial UI setup
-            resetPlayerUI();
-            renderPlaylist(); // Render empty local playlist initially
-            updatePlayerControlPermissions(); // Set initial permissions (all enabled if not in jam)
+            volumeSlider.value = audioPlayer.volume * 100; // Initialize volume slider from current player volume
+            // Ensure volume slider's visual fill is set
+            volumeSlider.style.setProperty('--volume', `${volumeSlider.value}%`);
+            youtubeVolumeSlider.value = audioPlayer.volume * 100;
+            youtubeVolumeSlider.style.setProperty('--volume', `${youtubeVolumeSlider.value}%`);
 
-            // Check URL for jam_id on page load, pre-fill join modal if present
+
+            // Hide all modals and dropdowns initially
+            searchModal.classList.add('hidden'); // Main search modal
+            addSongModal.classList.add('hidden'); // Add song confirmation modal
+            youtubeModal.classList.add('hidden');
+            managePlaylistModal.classList.add('hidden');
+            createJamModal.classList.add('hidden');
+            joinJamModal.classList.add('hidden');
+            jamControlsDiv.classList.add('hidden'); // Hide jam controls initially
+            permissionsManagementDiv.classList.add('hidden'); // Hide permissions management initially
+
+
+            // Check URL for jam_id on page load
             const urlParams = new URLSearchParams(window.location.search);
             const urlJamId = urlParams.get('jam_id') || (window.location.pathname.startsWith('/join/') ? window.location.pathname.substring(6) : null);
             
             if (urlJamId) {
                 joinJamIdInput.value = urlJamId; // Pre-fill the input
-                // We'll let the user manually click the Join Jam button to initiate the join
-                // since we want them to enter a nickname.
-                joinJamModal.classList.remove('hidden'); // Show the modal
+                // Fetch jam name for display before joining
+                if (db) {
+                    try {
+                        const jamDoc = await getDoc(doc(db, 'jam_sessions', urlJamId));
+                        if (jamDoc.exists && jamDoc.data().is_active) {
+                            joinJamNameDisplay.textContent = `Joining: ${jamDoc.data().name || `Session ${urlJamId}`}`;
+                        } else {
+                            joinJamNameDisplay.textContent = `Session ${urlJamId} (Not Found or Inactive)`;
+                            showMessage(`Jam session ${urlJamId} not found or is inactive.`, 5000);
+                        }
+                    } catch (e) {
+                        console.error("Error fetching jam name for join modal:", e);
+                        joinJamNameDisplay.textContent = `Session ${urlJamId} (Error Loading)`;
+                        showMessage("Error retrieving jam details.", 5000);
+                    }
+                }
+                joinJamModal.classList.remove('hidden'); // Show the modal for user to enter nickname and join
             } else {
-                showMessage("Welcome! Create or join a Jam Session.", 3000);
+                showMessage("Welcome! Use 'Search & Add Songs' or 'Play Random Hosted MP3s'.", 3000);
+                songTitleSpan.textContent = "No song loaded";
+                songArtistSpan.textContent = "";
+                songThumbnailImg.src = "https://placehold.co/128x128/CCCCCC/FFFFFF?text=No+Track";
             }
-        });
+        }
+        
+        // This function will be called on 'DOMContentLoaded'
+        document.addEventListener('DOMContentLoaded', handleInitialLoadAndJamJoin);
+
+        // This is a placeholder for the `confirm` function to be replaced by `showConfirmation`
+        window.confirm = (message) => {
+            console.warn("Using deprecated window.confirm(). Please refactor to showConfirmation.");
+            // Default to true for backward compatibility if not replaced.
+            return true;
+        };
+
     </script>
 </body>
 </html>

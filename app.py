@@ -19,6 +19,7 @@ from functools import wraps
 import datetime # For session cookie expiration
 from flask_caching import Cache # Import Flask-Caching
 import secrets # Import secrets for generating a secure key
+from werkzeug.exceptions import HTTPException # Import for custom error handling
 
 # Initialize Flask app, telling it to look for templates in the current directory (root)
 app = Flask(__name__, template_folder='.')
@@ -989,3 +990,28 @@ if __name__ == '__main__':
     
     # This line is for local development only. Vercel will run `app` directly.
     socketio.run(app, debug=True, port=5000)
+
+# Global error handler to ensure all errors return JSON responses
+@app.errorhandler(HTTPException) # Catch all HTTP errors from Werkzeug/Flask
+def handle_http_exception(e):
+    # Log the error details
+    logging.error(f"Global HTTP error handler caught: {e}")
+    
+    # Get the status code from the HTTPException
+    code = e.code if isinstance(e, HTTPException) else 500
+    message = e.description if isinstance(e, HTTPException) and e.description else "An unexpected server error occurred."
+
+    # For internal server errors (500), provide a generic message to the client
+    if code == 500:
+        message = "An internal server error occurred. Please try again later."
+    
+    response = jsonify(error={"code": code, "message": message})
+    response.status_code = code
+    return response
+
+@app.errorhandler(Exception) # Catch all other Python exceptions
+def handle_generic_exception(e):
+    logging.error(f"Global generic exception handler caught: {e}", exc_info=True) # Log full traceback
+    response = jsonify(error={"code": 500, "message": "An unexpected internal server error occurred."})
+    response.status_code = 500
+    return response

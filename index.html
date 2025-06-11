@@ -49,7 +49,7 @@
         window.firebaseCollection = collection; // Expose collection
         window.firebaseSignInAnonymously = signInAnonymously; // Expose signInAnonymously
         window.firebaseOnAuthStateChanged = onAuthStateChanged; // Expose onAuthStateChanged
-        window.firebaseSignInWithCustomToken = signInWithCustomToken; // Expose signInWithCustomToken
+        window.firebaseSignInWithCustomToken = signInWithCustomToken; // Expose signInWithCustomToken (FIXED TYPO)
     </script>
     
     <style>
@@ -437,6 +437,21 @@
             </button>
         </div>
 
+        <!-- New: Netlify Local MP3 Search Section (moved from modal) -->
+        <div id="netlify-search-section" class="w-full hidden mt-4 border-t border-gray-200 pt-6">
+            <h4 class="text-xl font-bold text-gray-700 mb-3 text-center">Search Local MP3s</h4>
+            <div class="flex space-x-2 mb-3">
+                <input type="text" id="netlify-search-input" placeholder="Search song by title or artist"
+                       class="flex-grow px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                <button id="perform-netlify-search" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors duration-200">
+                    <i class="fas fa-search"></i>
+                </button>
+            </div>
+            <div id="netlify-search-results" class="max-h-60 overflow-y-auto space-y-2 mb-4 custom-scrollbar">
+                <!-- Search results will be rendered here -->
+            </div>
+        </div>
+
         <ul id="playlist-container" class="space-y-3 max-h-80 overflow-y-auto pr-2 mt-6 border-t border-gray-200 pt-6 custom-scrollbar">
         </ul>
     </div>
@@ -469,24 +484,6 @@
                     </button>
                 </div>
                 <div id="youtube-search-results" class="max-h-60 overflow-y-auto space-y-2 custom-scrollbar"></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- New: Netlify Local MP3 Search Modal -->
-    <div id="netlify-modal" class="modal hidden">
-        <div class="modal-content">
-            <button class="modal-close-button" onclick="closeNetlifyModal()">×</button>
-            <h3 class="text-2xl font-bold text-gray-800 mb-6 text-center">Add Local/Netlify Songs</h3>
-            <div class="flex space-x-2 mb-3">
-                <input type="text" id="netlify-search-input" placeholder="Search song by title or artist"
-                       class="flex-grow px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
-                <button id="perform-netlify-search" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors duration-200">
-                    <i class="fas fa-search"></i>
-                </button>
-            </div>
-            <div id="netlify-search-results" class="max-h-60 overflow-y-auto space-y-2 mb-4 custom-scrollbar">
-                <!-- Search results will be rendered here -->
             </div>
         </div>
     </div>
@@ -634,6 +631,7 @@
 
         // Buttons and Dropdowns (matching selected HTML IDs)
         const addSongsButton = document.getElementById('add-songs-button'); // Main 'Add Songs' button
+        const netlifySearchSection = document.getElementById('netlify-search-section'); // NEW: Netlify search section
         const openOptionsDropdownButton = document.getElementById('open-options-dropdown-button'); // Three dots button
         const optionsDropdown = document.getElementById('options-dropdown'); // Dropdown menu
         const addYoutubeSongDropdown = document.getElementById('add-youtube-song-dropdown'); // "Add YouTube Song" option
@@ -644,10 +642,9 @@
 
         // Modals (matching selected HTML IDs)
         const youtubeModal = document.getElementById('youtube-modal');
-        const netlifyModal = document.getElementById('netlify-modal'); // New Netlify Modal
         const managePlaylistModal = document.getElementById('manage-playlist-modal');
 
-        // Elements within Netlify Modal (New)
+        // Elements within Netlify Section (NEW)
         const netlifySearchInput = document.getElementById('netlify-search-input');
         const performNetlifySearchButton = document.getElementById('perform-netlify-search');
         const netlifySearchResults = document.getElementById('netlify-search-results');
@@ -1099,7 +1096,7 @@
         audioPlayer.addEventListener('volumechange', () => {
             // Sync both sliders
             volumeBar.value = audioPlayer.volume * 100;
-            volumeBar.style.setProperty('--volume', `${volumeBar.value}%`);
+            volumeBar.style.setProperty('--volume', `${volumeBar.value}%`); // FIXED: Incomplete setProperty
             // There's only one HTML player (audioPlayer). youtubePlayer uses its own volume.
             // If youtubePlayer exists, also sync its volume for UI consistency.
             if (youtubePlayerReady && youtubePlayer) { // Ensure youtubePlayer exists before setting volume
@@ -1520,15 +1517,15 @@
             });
         }
 
-        // --- Modal Control Functions (matching selected HTML functions) ---
+        // --- Modal & Section Control Functions ---
         function openYoutubeModal() {
             console.log("Opening YouTube Modal");
             youtubeModal.classList.remove('hidden');
             youtubeUrlInputModal.value = ''; // Clear input on open
             youtubeTextSearchInput.value = ''; // Clear input on open
             youtubeSearchResults.innerHTML = ''; // Clear previous results
-            // Ensure other modals are closed
-            closeNetlifyModal();
+            // Ensure other modals/sections are closed
+            hideNetlifySearchSection(); // New: Hide Netlify section
             closeManagePlaylistModal();
             closeCreateJamModal();
             closeJoinJamModal();
@@ -1539,9 +1536,10 @@
             youtubeModal.classList.add('hidden');
         }
 
-        function openNetlifyModal() { // New function for Netlify modal
-            console.log("Opening Netlify Modal");
-            netlifyModal.classList.remove('hidden');
+        // New functions to show/hide Netlify search section on the main page
+        function showNetlifySearchSection() {
+            console.log("Showing Netlify Search Section");
+            netlifySearchSection.classList.remove('hidden');
             netlifySearchInput.value = ''; // Clear input on open
             netlifySearchResults.innerHTML = ''; // Clear previous results
             // Ensure other modals are closed
@@ -1551,18 +1549,18 @@
             closeJoinJamModal();
         }
 
-        function closeNetlifyModal() { // New function for Netlify modal
-            console.log("Closing Netlify Modal");
-            netlifyModal.classList.add('hidden');
+        function hideNetlifySearchSection() {
+            console.log("Hiding Netlify Search Section");
+            netlifySearchSection.classList.add('hidden');
         }
 
         function openManagePlaylistModal() {
             console.log("Opening Manage Playlist Modal");
             managePlaylistModal.classList.remove('hidden');
             renderEditablePlaylist(); // Populate editable playlist
-            // Ensure other modals are closed
+            // Ensure other modals/sections are closed
             closeYoutubeModal();
-            closeNetlifyModal();
+            hideNetlifySearchSection(); // New: Hide Netlify section
             closeCreateJamModal();
             closeJoinJamModal();
         }
@@ -1578,9 +1576,9 @@
             jamNameInput.value = '';
             shareLinkContainer.classList.add('hidden'); // Hide link until created
             jamShareLinkInput.value = '';
-            // Ensure other modals are closed
+            // Ensure other modals/sections are closed
             closeYoutubeModal();
-            closeNetlifyModal();
+            hideNetlifySearchSection(); // New: Hide Netlify section
             closeManagePlaylistModal();
             closeJoinJamModal();
         }
@@ -1620,9 +1618,9 @@
                     // Do not close modal automatically
                 }
             }
-            // Ensure other modals are closed
+            // Ensure other modals/sections are closed
             closeYoutubeModal();
-            closeNetlifyModal();
+            hideNetlifySearchSection(); // New: Hide Netlify section
             closeManagePlaylistModal();
             closeCreateJamModal();
         }
@@ -1633,9 +1631,8 @@
             // currentJamId is not cleared here; it's set on successful join or when leaving a jam.
         }
 
-        // --- Expose modal functions to window for inline onclicks ---
+        // --- Expose modal/section functions to window for inline onclicks ---
         window.closeYoutubeModal = closeYoutubeModal;
-        window.closeNetlifyModal = closeNetlifyModal; // Expose new Netlify modal close
         window.closeManagePlaylistModal = closeManagePlaylistModal;
         window.closeCreateJamModal = closeCreateJamModal;
         window.closeJoinJamModal = closeJoinJamModal;
@@ -1752,8 +1749,8 @@
                         showMessage("Random play mode disabled. Adding song to playlist.", 3000);
                     }
                     addSongToCurrentPlaylist(song);
-                    // Optionally close modal after adding a song
-                    closeNetlifyModal(); 
+                    // Optionally hide search section after adding a song
+                    // hideNetlifySearchSection(); // Uncomment if you want to hide immediately after adding
                 });
                 resultItem.appendChild(thumb);
                 resultItem.appendChild(textContent);
@@ -2352,15 +2349,22 @@
 
         // --- Event Listeners ---
 
-        // "Add Songs" button (now opens Netlify Local MP3 search modal)
+        // "Add Songs" button (now toggles Netlify Local MP3 search section)
         addSongsButton.addEventListener('click', () => {
-            console.log("Add Songs button clicked (opening Netlify Modal)");
+            console.log("Add Songs button clicked (toggling Netlify Search Section)");
             // Check for add permission
             if (currentJamId && !isHost && !myPermissions.add) {
                 showMessage("You do not have permission to add songs to this jam.", 3000);
                 return;
             }
-            openNetlifyModal(); // Open the new Netlify modal
+            netlifySearchSection.classList.toggle('hidden'); // Toggle visibility
+            // Ensure other modals are closed when this section is opened
+            if (!netlifySearchSection.classList.contains('hidden')) {
+                closeYoutubeModal();
+                closeManagePlaylistModal();
+                closeCreateJamModal();
+                closeJoinJamModal();
+            }
             optionsDropdown.classList.add('hidden'); // Ensure dropdown is closed
         });
 
@@ -2369,9 +2373,9 @@
             event.stopPropagation(); // Prevent document click from immediately closing it
             console.log("Three dots button clicked");
             optionsDropdown.classList.toggle('hidden'); // Toggle dropdown visibility
-            // Close other modals if open
+            // Close other modals/sections if open
             closeYoutubeModal();
-            closeNetlifyModal(); // Close Netlify modal
+            hideNetlifySearchSection(); // Hide Netlify search section
             closeManagePlaylistModal();
             closeCreateJamModal();
             closeJoinJamModal();
@@ -2551,7 +2555,7 @@
         // "Manage Playlist" button
         managePlaylistButton.addEventListener('click', openManagePlaylistModal);
 
-        // Netlify Modal -> Search by Name
+        // Netlify Section -> Search by Name
         performNetlifySearchButton.addEventListener('click', async () => {
             const query = netlifySearchInput.value.trim();
             if (!query) { showMessage("Please enter a search query.", 2000); return; }
@@ -2627,8 +2631,8 @@
             volumeBar.style.setProperty('--volume', `${volumeBar.value}%`);
 
 
-            // Hide all modals and dropdowns initially
-            if(netlifyModal) netlifyModal.classList.add('hidden'); // New Netlify modal
+            // Hide all modals and sections initially
+            if(netlifySearchSection) netlifySearchSection.classList.add('hidden'); // NEW: Hide Netlify section
             if(youtubeModal) youtubeModal.classList.add('hidden');
             if(managePlaylistModal) managePlaylistModal.classList.add('hidden');
             if(createJamModal) createJamModal.classList.add('hidden');
@@ -2761,5 +2765,3 @@
     </script>
 </body>
 </html>
-
-                

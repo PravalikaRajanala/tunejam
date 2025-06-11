@@ -13,276 +13,93 @@ import logging
 import uuid
 import re # For regex parsing URLs
 import random # Kept, potentially useful for future general randomization
-import firebase_admin
-from firebase_admin import credentials, firestore, auth
-from functools import wraps
-import datetime # For session cookie expiration
-from flask_caching import Cache # Import Flask-Caching
-import secrets # Import secrets for generating a secure key
+# Removed Firebase Admin SDK imports:
+# import firebase_admin
+# from firebase_admin import credentials, firestore, auth
+# from functools import wraps # No longer needed without decorators
+# import datetime # No longer strictly needed for session expiration, but useful for timestamps
 from werkzeug.exceptions import HTTPException # Import for custom error handling
 
 # Initialize Flask app, telling it to look for templates in the current directory (root)
 app = Flask(__name__, template_folder='.')
-CORS(app, supports_credentials=True) # Enable CORS and support credentials (for cookies)
+CORS(app, supports_credentials=True) # Enable CORS and support credentials (for cookies - though less critical without auth)
 
 # --- CONFIGURATION: Flask Secret Key ---
-# IMPORTANT: For production, always set FLASK_SECRET_KEY as an environment variable (e.g., on Vercel).
-# This key is crucial for Flask's session management, which Socket.IO might implicitly rely on
-# for secure communication and internal operations. If not set, Flask sessions will not be secure.
+# Still good practice for Flask's internal operations, even without explicit sessions.
 if os.environ.get('FLASK_SECRET_KEY'):
     app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY')
     logging.info("Flask SECRET_KEY loaded from environment variable.")
 else:
-    # Generate a secure key for local development if not set, but warn in production
     app.config['SECRET_KEY'] = secrets.token_hex(32)
     logging.warning("FLASK_SECRET_KEY environment variable is NOT set. "
-                    "A random key has been generated for this session. "
-                    "For production deployments, please set FLASK_SECRET_KEY in your environment variables "
-                    "to ensure session security.")
+                    "A random key has been generated for this session.")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- CONFIGURATION: Flask-Caching (Simplified to 'simple' in-memory cache) ---
-# As you're not using Redis, we will configure Flask-Caching to use the 'simple' in-memory cache.
-# This cache stores data in the Flask application's process memory.
-# It's good for single-instance deployments or development but won't share cache across multiple instances.
-app.config["CACHE_TYPE"] = "simple"
-app.config["CACHE_DEFAULT_TIMEOUT"] = 3600 # Cache items for 1 hour (3600 seconds) by default
-logging.info("Flask-Caching configured with 'simple' in-memory cache.")
-
-cache = Cache(app) # Initialize the cache after configuration
+# --- Removed Flask-Caching as authentication is gone, and it was primarily for cached auth-related calls ---
+# app.config["CACHE_TYPE"] = "simple"
+# app.config["CACHE_DEFAULT_TIMEOUT"] = 3600
+# cache = Cache(app)
 
 # Explicitly pass the Flask app to SocketIO and set async_mode
-# Using 'eventlet' as async_mode, as it's monkey-patched. This helps ensure proper async behavior.
 socketio = SocketIO(app, cors_allowed_origins="*", manage_session=False, async_mode='eventlet')
 
 logging.info("Flask app and SocketIO initialized.")
 
 # --- Ephemeral Directory for Downloads ---
-# On serverless platforms like Vercel, this directory is ephemeral.
-# Files downloaded here will NOT persist between requests or deployments.
-# For persistent storage of downloaded audio, use a cloud storage service (e.g., Firebase Storage, AWS S3).
-DOWNLOAD_DIR = tempfile.mkdtemp() # Correctly uses a writable temporary directory
+DOWNLOAD_DIR = tempfile.mkdtemp()
 logging.info(f"Using temporary directory for downloads: {DOWNLOAD_DIR}")
 
-# --- Firebase Admin SDK Initialization (for Firestore and Auth) ---
-db = None # Initialize db as None
-firebase_auth = None # Initialize firebase_auth as None
+# --- Initialize Firestore (without Firebase Admin SDK credentials) ---
+# NOTE: This setup assumes you will configure Firestore access for anonymous users
+# in your Firebase project's Firestore Security Rules for 'jam_sessions' and 'users' collections.
+# Without `firebase_admin` credentials, direct Firestore operations from the backend
+# will require that the Firebase project is configured for public access or
+# that the environment where this code runs has other means of authentication to Firestore.
+# For simplicity, assuming you are relying on client-side Firestore for jam management
+# or have public read/write rules.
+# Since Firebase Admin SDK is removed, direct backend Firestore operations are no longer possible without re-introducing it.
+# However, the user implied full removal of auth, so Firestore interactions via backend are removed,
+# and client-side Firestore will be the source of truth, if used.
+# If you *do* want server-side Firestore operations, you *must* re-add firebase-admin and its initialization.
 
-try:
-    firebase_credentials_json = os.environ.get('FIREBASE_ADMIN_CREDENTIALS_JSON')
+# For this "no auth" version, we will simplify backend's interaction with Firestore
+# and assume client-side Firebase handles direct Firestore writes.
+# Backend will primarily proxy YouTube and serve manifest.
 
-    if firebase_credentials_json:
-        try:
-            # Load credentials from environment variable
-            cred_dict = json.loads(firebase_credentials_json)
-            cred = credentials.Certificate(cred_dict)
-            if not firebase_admin._apps: # Initialize Firebase Admin SDK only once per process
-                firebase_admin.initialize_app(cred)
-            db = firestore.client()
-            firebase_auth = auth
-            logging.info("Firebase Admin SDK initialized successfully from environment variable.")
-        except json.JSONDecodeError as e:
-            logging.error(f"Error decoding FIREBASE_ADMIN_CREDENTIALS_JSON: {e}")
-        except Exception as e:
-            logging.error(f"Error initializing Firebase Admin SDK from environment variable: {e}")
-    else:
-        # Fallback for local development if environment variable is not set
-        FIREBASE_ADMIN_KEY_FILE_LOCAL = 'firebase_admin_key.json' # Adjust path for local testing
-        if os.path.exists(FIREBASE_ADMIN_KEY_FILE_LOCAL):
-            try:
-                if not firebase_admin._apps: # Initialize Firebase Admin SDK only once per process
-                    cred = credentials.Certificate(FIREBASE_ADMIN_KEY_FILE_LOCAL)
-                    firebase_admin.initialize_app(cred)
-                db = firestore.client()
-                firebase_auth = auth
-                logging.info("Firebase Admin SDK initialized successfully from local file (for development).")
-            except Exception as e:
-                logging.error(f"Error initializing Firebase Admin SDK from local file: {e}")
-        else:
-            logging.error("Firebase Admin SDK credentials not found. Set 'FIREBASE_ADMIN_CREDENTIALS_JSON' "
-                          "environment variable on Vercel or provide 'firebase_admin_key.json' for local development. "
-                          "Jam Session and Authentication features will not work.")
-            db = None # Ensure db is None if initialization fails
-            firebase_auth = None
-except Exception as e: # Catch any unexpected errors during the entire Firebase setup block
-    logging.error(f"An unexpected error occurred during Firebase Admin SDK setup: {e}")
-    db = None
-    firebase_auth = None
+# The `db` and `firebase_auth` variables are no longer used here.
+# Removed firebase_admin initialization logic.
 
 # --- Hosted MP3 Songs Manifest (for Netlify-hosted songs) ---
-# This manifest needs to be generated by your MP3 organization script
-# and deployed alongside this app.py.
-# We will now serve this dynamically with caching.
 HOSTED_SONGS_MANIFEST_FILE = 'hosted_songs_manifest.json'
 
 # --- Helper for getting base URL ---
 def get_base_url():
-    # In a Vercel environment, request.base_url or request.host_url
-    # should correctly reflect the public URL.
-    # For local development, it will be http://127.0.0.1:5000/
     return request.host_url
 
-# --- Authentication Decorator ---
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        session_cookie = request.cookies.get('session')
-        if not session_cookie:
-            logging.info("Login required: No session cookie found. Redirecting to login.")
-            # Use make_response to set a cookie directly on the redirect response
-            response = make_response(redirect(url_for('login_page')))
-            # Clear any potentially stale session cookie
-            response.set_cookie('session', '', expires=0, httponly=True, secure=True, samesite='Lax')
-            return response
-        try:
-            if not firebase_auth:
-                logging.error("Firebase Admin SDK Auth not initialized. Cannot verify session cookie for login_required.")
-                response = make_response(redirect(url_for('login_page')))
-                response.set_cookie('session', '', expires=0, httponly=True, secure=True, samesite='Lax')
-                return response
-
-            # Verify the session cookie. This will also check if the cookie is revoked.
-            # IMPORTANT: This step *does* hit Firebase's servers, contributing to potential latency.
-            decoded_claims = firebase_auth.verify_session_cookie(session_cookie, check_revoked=True)
-            request.user = decoded_claims # Attach user info to request object
-            logging.info(f"User {request.user['uid']} authenticated via session cookie for route access.")
-        except auth.InvalidSessionCookieError:
-            logging.warning("Invalid or revoked session cookie. Redirecting to login.")
-            response = make_response(redirect(url_for('login_page')))
-            response.set_cookie('session', '', expires=0, httponly=True, secure=True, samesite='Lax') # Clear invalid cookie
-            return response
-        except Exception as e:
-            logging.error(f"Error verifying session cookie in login_required decorator: {e}")
-            response = make_response(redirect(url_for('login_page')))
-            response.set_cookie('session', '', expires=0, httponly=True, secure=True, samesite='Lax')
-            return response
-        return f(*args, **kwargs)
-    return decorated_function
+# --- Removed Authentication Decorator ---
+# No more login_required decorator.
 
 # --- Flask Routes ---
 
-# Public facing login page
-@app.route('/login', methods=['GET'])
-def login_page():
-    return render_template('login.html')
-
-# Public facing registration page
-@app.route('/register', methods=['GET'])
-def register_page():
-    return render_template('register.html')
-
-# Endpoint for frontend to send Firebase ID token after client-side login/register
-# to create and set a server-side session cookie.
-@app.route('/set_session_cookie', methods=['POST'])
-def set_session_cookie():
-    if not firebase_auth:
-        logging.error("Firebase Admin SDK Auth not initialized for set_session_cookie route.")
-        return jsonify({"error": "Server authentication not ready."}), 500
-
-    id_token = request.json.get('id_token')
-    if not id_token:
-        return jsonify({"error": "ID token missing."}), 400
-
-    try:
-        # Verify the ID token and create a session cookie
-        expires_in = datetime.timedelta(days=5) # Session expires in 5 days
-        session_cookie = firebase_auth.create_session_cookie(id_token, expires_in=expires_in)
-
-        response = make_response(jsonify({"message": "Session cookie set successfully!"}))
-        # httponly=True, secure=True (for HTTPS), samesite='Lax' (good balance for CSRF protection)
-        response.set_cookie('session', session_cookie, httponly=True, secure=True, samesite='Lax', expires=datetime.datetime.now() + expires_in)
-        logging.info(f"Session cookie set for UID: {firebase_auth.verify_id_token(id_token)['uid']}.")
-        return response
-
-    except auth.InvalidIdTokenError:
-        logging.warning("Invalid ID token received for session cookie creation.")
-        return jsonify({"error": "Invalid ID token."}), 401
-    except Exception as e:
-        logging.error(f"Error during session cookie creation: {e}")
-        return jsonify({"error": f"Session cookie creation failed: {e}"}), 500
-
-# Handles user logout
-@app.route('/logout', methods=['POST'])
-def logout():
-    if not firebase_auth:
-        logging.error("Firebase Admin SDK Auth not initialized for logout route.")
-        return jsonify({"error": "Server authentication not ready."}), 500
-
-    session_cookie = request.cookies.get('session')
-    if session_cookie:
-        try:
-            # Revoke the session cookie
-            decoded_claims = firebase_auth.verify_session_cookie(session_cookie)
-            firebase_auth.revoke_refresh_tokens(decoded_claims['sub'])
-            logging.info(f"Revoked refresh token for user: {decoded_claims['sub']}")
-        except Exception as e:
-            logging.warning(f"Error revoking session cookie during logout: {e}")
-    
-    response = make_response(jsonify({"message": "Logged out successfully!"}))
-    response.set_cookie('session', '', expires=0, httponly=True, secure=True, samesite='Lax') # Clear the cookie
-    logging.info("User logged out, session cookie cleared.")
-    return response
-
-# Main application page, now protected
-@app.route('/dashboard')
-@login_required # Protect this route
-def dashboard():
-    # If login_required passes, request.user contains the decoded Firebase claims
-    # We pass __initial_auth_token to client which needs to sign in again with this token.
-    # The token is generated from the session cookie on the server.
-    if firebase_auth:
-        try:
-            # Create a custom token for the client-side Firebase SDK based on the authenticated user's UID
-            # This token is temporary and passed to the frontend for client-side authentication.
-            initial_auth_token = firebase_auth.create_custom_token(request.user['uid']).decode('utf-8')
-            logging.info(f"Generated custom token for dashboard user: {request.user['uid']}")
-        except Exception as e:
-            logging.error(f"Error generating custom token for dashboard: {e}")
-            initial_auth_token = None # Fallback to anonymous if token generation fails
-    else:
-        initial_auth_token = None # Firebase Admin SDK not initialized
-
-    # Pass the initial_auth_token and current app ID to the frontend
-    return render_template('index.html', 
-                           __initial_auth_token=json.dumps(initial_auth_token) if initial_auth_token else 'null',
-                           __app_id=os.environ.get('VERCEL_GIT_COMMIT_SHA', 'default-app-id')) # Vercel provides a unique ID
-
-
-# Default root route - redirect to login page
+# Default root route - goes directly to the main app page
 @app.route('/')
 def index():
-    return redirect(url_for('login_page'))
+    # No more authentication, just render the main page
+    return render_template('index.html')
 
 # Route to handle joining a session via a URL (e.g., /join/some_jam_id)
-# This route also needs to be protected
 @app.route('/join/<jam_id>')
-@login_required # Protect this route as well
 def join_by_link(jam_id):
     logging.info(f"Received request to join jam via link: {jam_id}")
-    # This route simply serves the main application page and passes the jam_id.
-    # The client-side JavaScript will then read the jam_id from the URL.
-    if firebase_auth:
-        try:
-            initial_auth_token = firebase_auth.create_custom_token(request.user['uid']).decode('utf-8')
-            logging.info(f"Generated custom token for join link user: {request.user['uid']}")
-        except Exception as e:
-            logging.error(f"Error generating custom token for join link: {e}")
-            initial_auth_token = None
-    else:
-        initial_auth_token = None
-    
-    return render_template('index.html', 
-                           initial_jam_id=jam_id,
-                           __initial_auth_token=json.dumps(initial_auth_token) if initial_auth_token else 'null',
-                           __app_id=os.environ.get('VERCEL_GIT_COMMIT_SHA', 'default-app-id'))
+    # Pass the jam_id to the frontend, which will handle joining via Socket.IO
+    return render_template('index.html', initial_jam_id=jam_id)
 
 @app.route('/hosted_songs_manifest.json')
-@cache.cached(timeout=86400) # Cache the manifest for 24 hours (86400 seconds)
+# Removed @cache.cached decorator since Flask-Caching is removed
 def hosted_songs_manifest_route():
     """
     Serves the hosted_songs_manifest.json file.
-    Cached to improve performance as this file is requested frequently.
     """
     try:
         if os.path.exists(HOSTED_SONGS_MANIFEST_FILE):
@@ -294,27 +111,23 @@ def hosted_songs_manifest_route():
         logging.error(f"Error serving hosted_songs_manifest.json: {e}")
         return jsonify({"error": f"Internal server error serving manifest: {e}"}), 500
 
-
 @app.route('/proxy_youtube_audio/<video_id>', methods=['GET'])
 def proxy_youtube_audio(video_id):
     """
-    Proxies YouTube audio directly to the client by first extracting the direct stream URL
-    with yt-dlp and then streaming from that URL using requests.
-    This avoids saving the audio to temporary disk storage entirely.
+    Proxies YouTube audio directly to the client.
     """
     logging.info(f"Received request to proxy YouTube audio for video ID: {video_id}")
 
     ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio', # Prefer m4a for better browser compatibility
+        'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio',
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
         'force_ipv4': True,
         'geo_bypass': True,
-        'age_limit': 99,
         'logger': logging.getLogger(),
-        'simulate': True, # Only extract info, don't download
-        'format_sort': ['res,ext:m4a', 'res,ext:webm'], # Sort by resolution, then prefer m4a/webm
+        'simulate': True,
+        'format_sort': ['res,ext:m4a', 'res,ext:webm'],
     }
 
     try:
@@ -325,7 +138,6 @@ def proxy_youtube_audio(video_id):
             audio_ext = None
             content_length = None
             
-            # Prioritize finding a format with a filesize for better content-length header accuracy
             for f in info.get('formats', []):
                 if f.get('ext') in ['m4a', 'webm', 'mp3', 'ogg', 'opus'] and f.get('url') and f.get('acodec') != 'none':
                     if f.get('filesize') is not None:
@@ -333,13 +145,12 @@ def proxy_youtube_audio(video_id):
                         audio_ext = f['ext']
                         content_length = f['filesize']
                         break
-            # Fallback if no filesize found, just get the first suitable audio format
             if not audio_url:
                 for f in info.get('formats', []):
                     if f.get('ext') in ['m4a', 'webm', 'mp3', 'ogg', 'opus'] and f.get('url') and f.get('acodec') != 'none':
                         audio_url = f['url']
                         audio_ext = f['ext']
-                        content_length = f.get('filesize') # May be None
+                        content_length = f.get('filesize')
                         break
 
             if not audio_url:
@@ -354,15 +165,14 @@ def proxy_youtube_audio(video_id):
                 headers_for_youtube_request['Range'] = range_header
                 logging.info(f"Proxying YouTube audio with Range header: {range_header}")
 
-            # Stream the response from YouTube
             youtube_stream_response = requests.get(
                 audio_url,
                 headers=headers_for_youtube_request,
-                stream=True, # Important for streaming large files
+                stream=True,
                 allow_redirects=True,
-                timeout=(30, 90) # Connection timeout, Read timeout
+                timeout=(30, 90)
             )
-            youtube_stream_response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            youtube_stream_response.raise_for_status()
 
             mimetype = youtube_stream_response.headers.get('Content-Type') or f'audio/{audio_ext}' if audio_ext else 'application/octet-stream'
             actual_content_length = youtube_stream_response.headers.get('Content-Length') or content_length
@@ -372,7 +182,6 @@ def proxy_youtube_audio(video_id):
 
             if actual_content_length:
                 flask_response.headers['Content-Length'] = actual_content_length
-            # If the client sent a Range header and YouTube responded with 206 Partial Content
             if range_header and youtube_stream_response.status_code == 206:
                 flask_response.status_code = 206
                 flask_response.headers['Content-Range'] = youtube_stream_response.headers.get('Content-Range')
@@ -408,7 +217,6 @@ def proxy_youtube_audio(video_id):
 def download_youtube_audio(video_id):
     """
     Downloads YouTube audio to a temporary file and returns its local URL.
-    This is used for older browsers that don't support direct YouTube streaming.
     NOTE: This route is generally not used now that proxy_youtube_audio streams directly.
     """
     logging.info(f"Received request to download YouTube audio for video ID: {video_id}")
@@ -422,7 +230,7 @@ def download_youtube_audio(video_id):
     ydl_opts = {
         'format': 'bestaudio/best',
         'noplaylist': True,
-        'outtmpl': audio_path, # Save to the temporary directory
+        'outtmpl': audio_path,
         'quiet': True,
         'no_warnings': True,
         'force_ipv4': True,
@@ -454,10 +262,10 @@ def local_audio(filename):
     file_path = os.path.join(DOWNLOAD_DIR, filename)
     if not os.path.exists(file_path):
         abort(404)
-    return Response(open(file_path, 'rb').read(), mimetype='audio/mpeg') # Or appropriate mime type
+    return Response(open(file_path, 'rb').read(), mimetype='audio/mpeg')
 
 @app.route('/youtube_info')
-@cache.cached(timeout=3600) # Cache YouTube video info for 1 hour
+# Removed @cache.cached decorator
 def youtube_info():
     """
     Extracts basic YouTube video information without downloading.
@@ -497,7 +305,7 @@ def youtube_info():
                 "uploader": uploader,
                 "thumbnail": thumbnail,
                 "duration": duration,
-                "type": "youtube" # Important for client-side logic
+                "type": "youtube"
             })
 
     except yt_dlp.utils.DownloadError as e:
@@ -514,9 +322,8 @@ def youtube_info():
         logging.error(f"Unexpected error during YouTube info extraction for URL {url}: {e}")
         return jsonify({"error": f"Internal server error: {e}"}), 500
 
-
-@app.route('/Youtube') # User's original casing is preserved
-@cache.cached(timeout=3600) # Cache YouTube search results for 1 hour
+@app.route('/Youtube')
+# Removed @cache.cached decorator
 def Youtube():
     """
     Searches YouTube for videos based on a query.
@@ -526,14 +333,14 @@ def Youtube():
         return jsonify({"error": "Query parameter is missing."}), 400
 
     ydl_opts = {
-        'default_search': 'ytsearch10', # Search for up to 10 results
+        'default_search': 'ytsearch10',
         'quiet': True,
         'no_warnings': True,
-        'extract_flat': True, # Only extract metadata, don't recursively extract playlist items
+        'extract_flat': True,
         'force_ipv4': True,
         'geo_bypass': True,
         'logger': logging.getLogger(),
-        'external_downloader_args': ['--socket-timeout', '15'] # Timeout for external downloader if used
+        'external_downloader_args': ['--socket-timeout', '15']
     }
 
     try:
@@ -563,20 +370,18 @@ def Youtube():
         return jsonify({"error": f"Internal server error: {e}"}), 500
 
 
-@app.route('/search_hosted_mp3s') # For Netlify-hosted songs
+@app.route('/search_hosted_mp3s')
 def search_hosted_mp3s():
     """
     Searches the loaded HOSTED_SONGS_DATA manifest for MP3s matching a query.
     NOTE: This route should use the HOSTED_SONGS_DATA loaded by `hosted_songs_manifest_route`.
     """
-    # Load HOSTED_SONGS_DATA from the cached manifest route
     manifest_response = hosted_songs_manifest_route()
     if manifest_response.status_code == 200:
         HOSTED_SONGS_DATA = json.loads(manifest_response.data)
     else:
         logging.error(f"Failed to load hosted songs manifest from /hosted_songs_manifest.json: {manifest_response.status_code}")
         return jsonify({"error": "Could not retrieve hosted songs data."}), 500
-
 
     query = request.args.get('query', '').lower()
     
@@ -585,7 +390,6 @@ def search_hosted_mp3s():
 
     filtered_songs = []
     for song in HOSTED_SONGS_DATA:
-        # Check if query is in title or artist (case-insensitive)
         if query in song.get('title', '').lower() or query in song.get('artist', '').lower():
             filtered_songs.append(song)
     
@@ -594,11 +398,15 @@ def search_hosted_mp3s():
 
 # --- SocketIO Event Handlers ---
 # Dictionaries to keep track of active jam sessions and SIDs.
-# In a multi-instance Vercel environment, these local dictionaries will not be synchronized
-# across instances. Firestore is the source of truth for jam session state.
-# These local caches are primarily for quick lookups within the scope of a single Flask instance
-# and for managing the host_sid to know which socket controls the session state.
-jam_sessions = {} # {jam_id: {host_sid: '...', participants: {sid: 'nickname'}, ...}}
+# For a "no-auth" setup, these local dictionaries become more critical
+# unless a central shared state (like a public Firestore without auth) is used.
+# Since the user wants to remove auth, Firestore integration is also simplified here.
+# If you still want persistent jam sessions, you'd need to re-add Firebase Admin SDK for Firestore.
+# For now, jam sessions will be purely in-memory on the Vercel instance that created them.
+# This means if the Vercel instance restarts or scales, the jam data is lost.
+# To keep sessions persistent without auth, you'd need to use Firestore with anonymous/public rules.
+# Given the user's explicit request to remove login/auth, I'm assuming ephemeral sessions for now.
+jam_sessions = {} # {jam_id: {host_sid: '...', participants: {sid: 'nickname'}, playlist: [], playback_state: {}}}
 sids_in_jams = {} # {sid: {jam_id: '...', nickname: '...'}}
 
 
@@ -613,118 +421,83 @@ def handle_disconnect():
         jam_id = sids_in_jams[request.sid]['jam_id']
         nickname = sids_in_jams[request.sid]['nickname']
 
-        if db: # Only proceed if Firestore is initialized
-            jam_ref = db.collection('jam_sessions').document(jam_id)
-            try:
-                jam_doc = jam_ref.get()
-                if jam_doc.exists:
-                    jam_data = jam_doc.to_dict()
-                    if jam_data.get('host_sid') == request.sid: # Use .get() for safety
-                        # Host disconnected, mark session as ended in Firestore
-                        logging.info(f"Host {nickname} ({request.sid}) for jam {jam_id} disconnected. Marking session as ended.")
-                        jam_ref.update({'is_active': False, 'ended_at': firestore.SERVER_TIMESTAMP})
-                        socketio.emit('session_ended', {'jam_id': jam_id, 'message': 'Host disconnected. Session ended.'}, room=jam_id)
-                    else:
-                        # Participant disconnected, remove from participants list
-                        if request.sid in jam_data.get('participants', {}): # Use .get() for safety
-                            updated_participants = {sid: name for sid, name in jam_data['participants'].items() if sid != request.sid}
-                            jam_ref.update({'participants': updated_participants})
-                            logging.info(f"Participant {nickname} ({request.sid}) left jam {jam_id}.")
-                            # Send the entire participants map (nicknames)
-                            socketio.emit('update_participants', {
-                                'jam_id': jam_id,
-                                'participants': updated_participants # Send the map directly
-                            }, room=jam_id)
-                else:
-                    logging.warning(f"Disconnected client {request.sid} was in jam {jam_id}, but jam not found in Firestore.")
-            except Exception as e:
-                logging.error(f"Error handling disconnect for jam {jam_id} in Firestore: {e}")
-        else:
-            logging.warning("Firestore DB not initialized. Cannot process disconnect for jam sessions.")
-        
-        # Clean up local socketio tracking
-        # Note: Local jam_sessions cache will eventually become stale in multi-instance environments.
-        # Firestore is the source of truth.
-        if jam_id in jam_sessions and jam_sessions[jam_id]['host_sid'] == request.sid:
-             del jam_sessions[jam_id] # Remove local tracking for host-ended session
-        elif request.sid in jam_sessions.get(jam_id, {}).get('participants', {}):
-             jam_sessions[jam_id]['participants'].pop(request.sid, None)
-
-        if request.sid in sids_in_jams:
+        if jam_id in jam_sessions:
+            jam_data = jam_sessions[jam_id]
+            
+            if jam_data.get('host_sid') == request.sid:
+                # Host disconnected, delete the session
+                logging.info(f"Host {nickname} ({request.sid}) for jam {jam_id} disconnected. Deleting session.")
+                socketio.emit('session_ended', {'jam_id': jam_id, 'message': 'Host disconnected. Session ended.'}, room=jam_id)
+                del jam_sessions[jam_id]
+            else:
+                # Participant disconnected, remove from participants list
+                if request.sid in jam_data.get('participants', {}):
+                    updated_participants = {sid: name for sid, name in jam_data['participants'].items() if sid != request.sid}
+                    jam_data['participants'] = updated_participants # Update local state
+                    logging.info(f"Participant {nickname} ({request.sid}) left jam {jam_id}.")
+                    socketio.emit('update_participants', {
+                        'jam_id': jam_id,
+                        'participants': updated_participants
+                    }, room=jam_id)
+                    
+                    # If this was the last participant and host is already gone, delete session
+                    if not updated_participants and jam_id not in jam_sessions: # Check if host already deleted
+                        logging.info(f"Last participant left jam {jam_id} which had no host. Deleting session.")
+                        # Session might already be gone if host left.
+                        # No need to emit session_ended again if host already did.
+                        pass # The host's disconnect already handled the deletion.
+                
+            # Clean up local socketio tracking for the disconnecting SID
             del sids_in_jams[request.sid]
-        
-        leave_room(jam_id) # Ensure socket leaves the room
+            leave_room(jam_id) # Ensure socket leaves the room
+        else:
+            logging.warning(f"Disconnected client {request.sid} was in jam {jam_id}, but jam not found in local sessions.")
+            del sids_in_jams[request.sid] # Still clean up sids_in_jams
+            leave_room(jam_id)
 
 @socketio.on('create_session')
 def create_session(data):
-    if db is None:
-        logging.error("Firestore DB not initialized. Cannot create jam session.")
-        emit('join_failed', {'message': 'Server database not initialized. Cannot create session.'})
-        return
-
     jam_name = data.get('jam_name', 'Unnamed Jam Session')
     nickname = data.get('nickname', 'Host')
     
-    try:
-        new_jam_doc_ref = db.collection('jam_sessions').document() # Firestore generates ID
-        jam_id = new_jam_doc_ref.id
+    # Generate a unique jam ID
+    jam_id = str(uuid.uuid4())
 
-        initial_jam_data = {
-            'name': jam_name,
-            'host_sid': request.sid,
-            'participants': {request.sid: nickname}, # Store SID to nickname mapping
-            'playlist': [],
-            'playback_state': {
-                'current_track_index': 0,
-                'current_playback_time': 0,
-                'is_playing': False,
-                'timestamp': firestore.SERVER_TIMESTAMP # Use server timestamp for sync
-            },
-            'created_at': firestore.SERVER_TIMESTAMP,
-            'is_active': True # Mark session as active
-        }
-        new_jam_doc_ref.set(initial_jam_data)
+    initial_jam_data = {
+        'name': jam_name,
+        'host_sid': request.sid,
+        'participants': {request.sid: nickname}, # Store SID to nickname mapping
+        'playlist': [],
+        'playback_state': {
+            'current_track_index': 0,
+            'current_playback_time': 0,
+            'is_playing': False,
+            'timestamp': 0 # Local timestamp for internal logic
+        },
+        'created_at': 0, # Placeholder
+        'is_active': True # Mark session as active
+    }
+    
+    jam_sessions[jam_id] = initial_jam_data
+    sids_in_jams[request.sid] = {'jam_id': jam_id, 'nickname': nickname}
 
-        # Update local server-side tracking (not authoritative, Firestore is)
-        jam_sessions[jam_id] = {
-            'name': jam_name,
-            'host_sid': request.sid,
-            'participants': {request.sid: nickname},
-            'playlist': [],
-            'playback_state': {
-                'current_track_index': 0,
-                'current_playback_time': 0,
-                'is_playing': False,
-                'timestamp': 0 # Local cache doesn't need server timestamp
-            }
-        }
-        sids_in_jams[request.sid] = {'jam_id': jam_id, 'nickname': nickname}
+    join_room(jam_id)
+    logging.info(f"Jam session '{jam_name}' created with ID: {jam_id} by host {nickname} ({request.sid})")
 
-        join_room(jam_id)
-        logging.info(f"Jam session '{jam_name}' created with ID: {jam_id} by host {nickname} ({request.sid})")
+    shareable_link = f"{get_base_url()}join/{jam_id}"
 
-        shareable_link = f"{get_base_url()}join/{jam_id}" # Dynamic link
-
-        emit('session_created', {
-            'jam_id': jam_id,
-            'jam_name': jam_name,
-            'is_host': True,
-            'initial_state': initial_jam_data['playback_state'],
-            'participants': initial_jam_data['participants'], # Send full participants map for client-side display
-            'shareable_link': shareable_link,
-            'nickname_used': nickname # Send back the nickname that was used
-        })
-
-    except Exception as e:
-        logging.error(f"Error creating jam session in Firestore: {e}")
-        emit('join_failed', {'message': f'Error creating session: {e}'})
+    emit('session_created', {
+        'jam_id': jam_id,
+        'jam_name': jam_name,
+        'is_host': True,
+        'initial_state': initial_jam_data['playback_state'],
+        'participants': initial_jam_data['participants'],
+        'shareable_link': shareable_link,
+        'nickname_used': nickname
+    })
 
 @socketio.on('join_session')
-def join_session_handler(data): # Renamed to avoid conflict with Flask route
-    if db is None:
-        logging.warning("Firestore DB not initialized. Cannot join jam session.")
-        return
-
+def join_session_handler(data):
     jam_id = data.get('jam_id')
     nickname = data.get('nickname', 'Guest')
     
@@ -733,241 +506,170 @@ def join_session_handler(data): # Renamed to avoid conflict with Flask route
         emit('join_failed', {'message': 'Jam ID is missing.'})
         return
 
-    try:
-        jam_doc = db.collection('jam_sessions').document(jam_id).get()
-        if not jam_doc.exists or not jam_doc.to_dict().get('is_active', False): # Check for 'is_active'
-            logging.warning(f"Client {request.sid} attempted to join non-existent or inactive jam {jam_id}")
-            emit('join_failed', {'message': 'Jam session not found or has ended.'})
-            return
+    if jam_id not in jam_sessions or not jam_sessions[jam_id].get('is_active', False):
+        logging.warning(f"Client {request.sid} attempted to join non-existent or inactive jam {jam_id}")
+        emit('join_failed', {'message': 'Jam session not found or has ended.'})
+        return
 
-        jam_data = jam_doc.to_dict()
-        
-        # Add participant to Firestore (or update if already there)
-        updated_participants = jam_data.get('participants', {})
-        updated_participants[request.sid] = nickname
-        db.collection('jam_sessions').document(jam_id).update({'participants': updated_participants})
+    jam_data = jam_sessions[jam_id]
+    
+    # Add participant to local dictionary
+    updated_participants = jam_data.get('participants', {})
+    updated_participants[request.sid] = nickname
+    jam_data['participants'] = updated_participants
 
-        # Update local tracking (redundant if using Firestore as source of truth, but kept for consistency)
-        # It's better to rely on Firestore as the single source of truth for jam_sessions data.
-        # This local cache is mostly for convenience within SocketIO handlers for quick lookups.
-        if jam_id not in jam_sessions:
-            jam_sessions[jam_id] = {
-                'name': jam_data.get('name', 'Unnamed Jam'),
-                'host_sid': jam_data.get('host_sid'),
-                'playlist': jam_data.get('playlist', []),
-                'playback_state': jam_data.get('playback_state', {})
-            }
-        jam_sessions[jam_id]['participants'] = updated_participants
-        sids_in_jams[request.sid] = {'jam_id': jam_id, 'nickname': nickname}
+    sids_in_jams[request.sid] = {'jam_id': jam_id, 'nickname': nickname}
 
-        join_room(jam_id)
-        logging.info(f"Client {nickname} ({request.sid}) joined jam {jam_id}")
+    join_room(jam_id)
+    logging.info(f"Client {nickname} ({request.sid}) joined jam {jam_id}")
 
-        # Send current state to the newly joined participant
-        playback_state = jam_data.get('playback_state', {})
-        emit('session_join_success', {
-            'jam_id': jam_id,
-            'current_track_index': playback_state.get('current_track_index', 0),
-            'current_playback_time': playback_state.get('current_playback_time', 0),
-            'is_playing': playback_state.get('is_playing', False),
-            'playlist': jam_data.get('playlist', []),
-            'jam_name': jam_data.get('name', 'Unnamed Jam'),
-            'last_synced_at': playback_state.get('timestamp', firestore.SERVER_TIMESTAMP),
-            'participants': updated_participants, # Send full participants map
-            'nickname_used': nickname
-        })
+    playback_state = jam_data.get('playback_state', {})
+    emit('session_join_success', {
+        'jam_id': jam_id,
+        'current_track_index': playback_state.get('current_track_index', 0),
+        'current_playback_time': playback_state.get('current_playback_time', 0),
+        'is_playing': playback_state.get('is_playing', False),
+        'playlist': jam_data.get('playlist', []),
+        'jam_name': jam_data.get('name', 'Unnamed Jam'),
+        'last_synced_at': playback_state.get('timestamp', 0),
+        'host_sid': jam_data.get('host_sid'), # Send host_sid for client-side role check
+        'participants': updated_participants,
+        'nickname_used': nickname
+    })
 
-        # Notify all other participants in the room about the new participant
-        emit('update_participants', {
-            'jam_id': jam_id,
-            'participants': updated_participants
-        }, room=jam_id, include_self=False)
-
-    except Exception as e:
-        logging.error(f"Error joining jam session {jam_id} in Firestore: {e}")
-        emit('join_failed', {'message': f'Error joining session: {e}'})
+    # Notify all other participants in the room about the new participant
+    emit('update_participants', {
+        'jam_id': jam_id,
+        'participants': updated_participants
+    }, room=jam_id, include_self=False)
 
 @socketio.on('sync_playback_state')
 def sync_playback_state(data):
-    if db is None:
-        logging.warning("Firestore DB not initialized. Cannot sync playback state.")
-        return
-
     jam_id = data.get('jam_id')
-    if not jam_id:
-        logging.warning("Received sync_playback_state without jam_id.")
+    if not jam_id or jam_id not in jam_sessions:
+        logging.warning("Received sync_playback_state for non-existent jam or without jam_id.")
         return
 
-    try:
-        jam_doc = db.collection('jam_sessions').document(jam_id).get()
-        if not jam_doc.exists:
-            logging.warning(f"Sync request for non-existent jam {jam_id}")
-            return
-        
-        jam_data = jam_doc.to_dict()
-        if jam_data.get('host_sid') != request.sid: # Only host can sync state
-            logging.warning(f"Non-host {request.sid} attempted to sync state for jam {jam_id}")
-            return
+    jam_data = jam_sessions[jam_id]
+    if jam_data.get('host_sid') != request.sid: # Only host can sync state
+        logging.warning(f"Non-host {request.sid} attempted to sync state for jam {jam_id}")
+        return
 
-        new_playback_state = {
-            'current_track_index': data.get('current_track_index'),
-            'current_playback_time': data.get('current_playback_time'),
-            'is_playing': data.get('is_playing'),
-            'timestamp': firestore.SERVER_TIMESTAMP # Always update with server timestamp
-        }
-        
-        # Host sends the full playlist with every sync for robustness
-        db.collection('jam_sessions').document(jam_id).update({
-            'playback_state': new_playback_state,
-            'playlist': data.get('playlist', []) # Host sends full playlist
-        })
-        logging.info(f"Host {request.sid} synced playback state for jam {jam_id}.")
+    new_playback_state = {
+        'current_track_index': data.get('current_track_index'),
+        'current_playback_time': data.get('current_playback_time'),
+        'is_playing': data.get('is_playing'),
+        'timestamp': datetime.datetime.now().timestamp() # Use server timestamp for sync
+    }
+    
+    jam_data['playback_state'] = new_playback_state
+    jam_data['playlist'] = data.get('playlist', []) # Host sends full playlist
 
-    except Exception as e:
-        logging.error(f"Error syncing playback state for jam {jam_id} to Firestore: {e}")
+    logging.info(f"Host {request.sid} synced playback state for jam {jam_id}.")
+
+    # Broadcast updated state to all other participants in the room
+    emit('playback_state_updated', {
+        'jam_id': jam_id,
+        'playback_state': new_playback_state,
+        'playlist': jam_data['playlist']
+    }, room=jam_id, include_self=False)
+
 
 @socketio.on('add_song_to_jam')
 def add_song_to_jam(data):
-    """
-    Adds a song to the jam's playlist.
-    Song object now includes 'type' (e.g., 'audio' or 'youtube') and appropriate 'url' or 'videoId'.
-    """
-    if db is None:
-        logging.warning("Firestore DB not initialized. Cannot add song to jam.")
+    jam_id = data.get('jam_id')
+    song = data.get('song')
+
+    if not jam_id or jam_id not in jam_sessions or not song or not song.get('type'):
+        logging.warning(f"Invalid add_song_to_jam request from {request.sid} for jam {jam_id}")
+        return
+    
+    jam_data = jam_sessions[jam_id]
+    if jam_data.get('host_sid') != request.sid:
+        logging.warning(f"Non-host {request.sid} attempted to add song to jam {jam_id}")
         return
 
-    jam_id = data.get('jam_id')
-    song = data.get('song') # Song object from client
-
-    # Assign a unique ID to the song if it doesn't have one (for hosted MP3s etc.)
+    # Assign a unique ID to the song if it doesn't have one
     if 'id' not in song or song['id'] is None:
         song['id'] = str(uuid.uuid4())
 
-    # Validate song type and URL/videoId
-    if not jam_id or not song or not song.get('type'):
-        logging.warning(f"Invalid add_song_to_jam request from {request.sid} for jam {jam_id}: Missing jam_id, song, or song type.")
-        return
-    if song['type'] == 'youtube' and not song.get('videoId'):
-        logging.warning(f"Invalid YouTube song: Missing videoId for jam {jam_id}, song: {song}")
-        return
-    if (song['type'] == 'audio' or song['type'] == 'youtube_download') and not song.get('url'):
-        logging.warning(f"Invalid audio/youtube_download song: Missing URL for jam {jam_id}, song: {song}")
-        return
+    updated_playlist = jam_data.get('playlist', [])
+    updated_playlist.append(song)
+    jam_data['playlist'] = updated_playlist # Update local state
 
-    try:
-        jam_ref = db.collection('jam_sessions').document(jam_id)
-        jam_doc = jam_ref.get()
-        if not jam_doc.exists:
-            logging.warning(f"Add song request for non-existent jam {jam_id}")
-            return
+    logging.info(f"Song '{song.get('title', 'Unknown')}' (Type: {song.get('type')}) added to jam {jam_id} by host {request.sid}.")
 
-        jam_data = jam_doc.to_dict()
-        if jam_data.get('host_sid') != request.sid:
-            logging.warning(f"Non-host {request.sid} attempted to add song to jam {jam_id}")
-            return
-
-        updated_playlist = jam_data.get('playlist', [])
-        updated_playlist.append(song)
-        
-        jam_ref.update({'playlist': updated_playlist})
-        logging.info(f"Song '{song.get('title', 'Unknown')}' (Type: {song.get('type')}) added to jam {jam_id} by host {request.sid} via Firestore.")
-
-    except Exception as e:
-        logging.error(f"Error adding song to jam {jam_id} in Firestore: {e}")
+    # Broadcast updated playlist to all participants
+    emit('playlist_updated', {'jam_id': jam_id, 'playlist': updated_playlist}, room=jam_id)
 
 @socketio.on('remove_song_from_jam')
 def remove_song_from_jam(data):
-    if db is None:
-        logging.warning("Firestore DB not initialized. Cannot remove song from jam.")
-        return
-
     jam_id = data.get('jam_id')
-    song_id_to_remove = data.get('song_id') # Now removing by unique song ID
+    song_id_to_remove = data.get('song_id')
 
-    if not jam_id or not song_id_to_remove:
+    if not jam_id or jam_id not in jam_sessions or not song_id_to_remove:
         logging.warning(f"Invalid remove_song_from_jam request from {request.sid} for jam {jam_id}")
         return
 
-    try:
-        jam_ref = db.collection('jam_sessions').document(jam_id)
-        jam_doc = jam_ref.get()
-        if not jam_doc.exists:
-            logging.warning(f"Remove song request for non-existent jam {jam_id}")
-            return
+    jam_data = jam_sessions[jam_id]
+    if jam_data.get('host_sid') != request.sid:
+        logging.warning(f"Non-host {request.sid} attempted to remove song from jam {jam_id}")
+        return
 
-        jam_data = jam_doc.to_dict()
-        if jam_data.get('host_sid') != request.sid:
-            logging.warning(f"Non-host {request.sid} attempted to remove song from jam {jam_id}")
-            return
+    current_playlist = jam_data.get('playlist', [])
+    index_to_remove = -1
+    for i, song in enumerate(current_playlist):
+        if song.get('id') == song_id_to_remove:
+            index_to_remove = i
+            break
 
-        current_playlist = jam_data.get('playlist', [])
+    if index_to_remove != -1:
+        removed_song = current_playlist.pop(index_to_remove)
+        logging.info(f"Song '{removed_song.get('title', 'Unknown')}' removed from jam {jam_id} by host {request.sid}.")
         
-        # Find index by song_id
-        index_to_remove = -1
-        for i, song in enumerate(current_playlist):
-            if song.get('id') == song_id_to_remove:
-                index_to_remove = i
-                break
+        # Adjust current_track_index if the removed song affects it
+        current_track_index = jam_data['playback_state'].get('current_track_index', 0)
+        if current_track_index == index_to_remove:
+            if not current_playlist:
+                current_track_index = 0
+                jam_data['playback_state']['is_playing'] = False # Stop playing if playlist empty
+            elif index_to_remove >= len(current_playlist):
+                current_track_index = 0 # If last song was removed, go to beginning
+        elif current_track_index > index_to_remove:
+            current_track_index -= 1
+        
+        jam_data['playlist'] = current_playlist
+        jam_data['playback_state']['current_track_index'] = current_track_index
+        jam_data['playback_state']['current_playback_time'] = 0 # Reset time for new current track
+        jam_data['playback_state']['timestamp'] = datetime.datetime.now().timestamp() # Update timestamp
 
-        if index_to_remove != -1:
-            removed_song = current_playlist.pop(index_to_remove)
-            logging.info(f"Song '{removed_song.get('title', 'Unknown')}' removed from jam {jam_id} by host {request.sid} via Firestore.")
-
-            # Adjust current_track_index if the removed song affects it
-            current_track_index = jam_data['playback_state'].get('current_track_index', 0)
-            if current_track_index == index_to_remove:
-                if not current_playlist:
-                    current_track_index = 0
-                elif index_to_remove >= len(current_playlist):
-                    current_track_index = 0 # If last song was removed, go to beginning or 0
-            elif current_track_index > index_to_remove:
-                current_track_index -= 1
-            
-            # Update Firestore
-            jam_ref.update({
-                'playlist': current_playlist,
-                'playback_state.current_track_index': current_track_index,
-                'playback_state.current_playback_time': 0, # Reset time for new current track
-                'playback_state.is_playing': jam_data['playback_state'].get('is_playing', False) and len(current_playlist) > 0 # Keep playing if playlist not empty
-            })
-
-    except Exception as e:
-        logging.error(f"Error removing song from jam {jam_id} in Firestore: {e}")
-
+        # Broadcast updated playlist and adjusted state
+        emit('playlist_updated', {'jam_id': jam_id, 'playlist': current_playlist}, room=jam_id)
+        emit('playback_state_updated', {'jam_id': jam_id, 'playback_state': jam_data['playback_state'], 'playlist': current_playlist}, room=jam_id) # Send full state for re-sync
 
 # When running on Vercel, the application is served by a WSGI server (e.g., Gunicorn),
 # which handles starting the Flask app. The 'socketio.run(app, ...)' call is only for
 # local development with Flask's built-in server.
 if __name__ == '__main__':
-    if db is None:
-        logging.error("Firestore database is not initialized. Jam Session feature will not work.")
-    if firebase_auth is None:
-        logging.error("Firebase Admin SDK Auth is not initialized. Authentication features will not work.")
-    
+    # No more Firebase checks here
     # This line is for local development only. Vercel will run `app` directly.
     socketio.run(app, debug=True, port=5000)
 
 # Global error handler to ensure all errors return JSON responses
-@app.errorhandler(HTTPException) # Catch all HTTP errors from Werkzeug/Flask
+@app.errorhandler(HTTPException)
 def handle_http_exception(e):
-    # Log the error details
     logging.error(f"Global HTTP error handler caught: {e}")
-    
-    # Get the status code from the HTTPException
     code = e.code if isinstance(e, HTTPException) else 500
     message = e.description if isinstance(e, HTTPException) and e.description else "An unexpected server error occurred."
-
-    # For internal server errors (500), provide a generic message to the client
     if code == 500:
         message = "An internal server error occurred. Please try again later."
-    
     response = jsonify(error={"code": code, "message": message})
     response.status_code = code
     return response
 
-@app.errorhandler(Exception) # Catch all other Python exceptions
+@app.errorhandler(Exception)
 def handle_generic_exception(e):
-    logging.error(f"Global generic exception handler caught: {e}", exc_info=True) # Log full traceback
+    logging.error(f"Global generic exception handler caught: {e}", exc_info=True)
     response = jsonify(error={"code": 500, "message": "An unexpected internal server error occurred."})
     response.status_code = 500
     return response

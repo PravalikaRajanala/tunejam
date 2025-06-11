@@ -13,11 +13,8 @@ import logging
 import uuid
 import re # For regex parsing URLs
 import random # Kept, potentially useful for future general randomization
-# Removed Firebase Admin SDK imports:
-# import firebase_admin
-# from firebase_admin import credentials, firestore, auth
-# from functools import wraps # No longer needed without decorators
-# import datetime # No longer strictly needed for session expiration, but useful for timestamps
+import datetime # Now strictly needed for timestamps for sync
+import secrets # Import secrets for generating a secure key for Flask secret key
 from werkzeug.exceptions import HTTPException # Import for custom error handling
 
 # Initialize Flask app, telling it to look for templates in the current directory (root)
@@ -36,11 +33,6 @@ else:
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Removed Flask-Caching as authentication is gone, and it was primarily for cached auth-related calls ---
-# app.config["CACHE_TYPE"] = "simple"
-# app.config["CACHE_DEFAULT_TIMEOUT"] = 3600
-# cache = Cache(app)
-
 # Explicitly pass the Flask app to SocketIO and set async_mode
 socketio = SocketIO(app, cors_allowed_origins="*", manage_session=False, async_mode='eventlet')
 
@@ -50,35 +42,12 @@ logging.info("Flask app and SocketIO initialized.")
 DOWNLOAD_DIR = tempfile.mkdtemp()
 logging.info(f"Using temporary directory for downloads: {DOWNLOAD_DIR}")
 
-# --- Initialize Firestore (without Firebase Admin SDK credentials) ---
-# NOTE: This setup assumes you will configure Firestore access for anonymous users
-# in your Firebase project's Firestore Security Rules for 'jam_sessions' and 'users' collections.
-# Without `firebase_admin` credentials, direct Firestore operations from the backend
-# will require that the Firebase project is configured for public access or
-# that the environment where this code runs has other means of authentication to Firestore.
-# For simplicity, assuming you are relying on client-side Firestore for jam management
-# or have public read/write rules.
-# Since Firebase Admin SDK is removed, direct backend Firestore operations are no longer possible without re-introducing it.
-# However, the user implied full removal of auth, so Firestore interactions via backend are removed,
-# and client-side Firestore will be the source of truth, if used.
-# If you *do* want server-side Firestore operations, you *must* re-add firebase-admin and its initialization.
-
-# For this "no auth" version, we will simplify backend's interaction with Firestore
-# and assume client-side Firebase handles direct Firestore writes.
-# Backend will primarily proxy YouTube and serve manifest.
-
-# The `db` and `firebase_auth` variables are no longer used here.
-# Removed firebase_admin initialization logic.
-
 # --- Hosted MP3 Songs Manifest (for Netlify-hosted songs) ---
 HOSTED_SONGS_MANIFEST_FILE = 'hosted_songs_manifest.json'
 
 # --- Helper for getting base URL ---
 def get_base_url():
     return request.host_url
-
-# --- Removed Authentication Decorator ---
-# No more login_required decorator.
 
 # --- Flask Routes ---
 
@@ -96,7 +65,6 @@ def join_by_link(jam_id):
     return render_template('index.html', initial_jam_id=jam_id)
 
 @app.route('/hosted_songs_manifest.json')
-# Removed @cache.cached decorator since Flask-Caching is removed
 def hosted_songs_manifest_route():
     """
     Serves the hosted_songs_manifest.json file.
@@ -265,7 +233,6 @@ def local_audio(filename):
     return Response(open(file_path, 'rb').read(), mimetype='audio/mpeg')
 
 @app.route('/youtube_info')
-# Removed @cache.cached decorator
 def youtube_info():
     """
     Extracts basic YouTube video information without downloading.
@@ -323,7 +290,6 @@ def youtube_info():
         return jsonify({"error": f"Internal server error: {e}"}), 500
 
 @app.route('/Youtube')
-# Removed @cache.cached decorator
 def Youtube():
     """
     Searches YouTube for videos based on a query.
@@ -400,13 +366,10 @@ def search_hosted_mp3s():
 # Dictionaries to keep track of active jam sessions and SIDs.
 # For a "no-auth" setup, these local dictionaries become more critical
 # unless a central shared state (like a public Firestore without auth) is used.
-# Since the user wants to remove auth, Firestore integration is also simplified here.
 # If you still want persistent jam sessions, you'd need to re-add Firebase Admin SDK for Firestore.
 # For now, jam sessions will be purely in-memory on the Vercel instance that created them.
 # This means if the Vercel instance restarts or scales, the jam data is lost.
-# To keep sessions persistent without auth, you'd need to use Firestore with anonymous/public rules.
-# Given the user's explicit request to remove login/auth, I'm assuming ephemeral sessions for now.
-jam_sessions = {} # {jam_id: {host_sid: '...', participants: {sid: 'nickname'}, playlist: [], playback_state: {}}}
+jam_sessions = {} # {jam_id: {host_sid: '...', participants: {sid: {'nickname': '...', 'permissions': {'play': True, 'add': True, 'remove': True}}}, playlist: [], playback_state: {}}}
 sids_in_jams = {} # {sid: {jam_id: '...', nickname: '...'}}
 
 
@@ -432,7 +395,7 @@ def handle_disconnect():
             else:
                 # Participant disconnected, remove from participants list
                 if request.sid in jam_data.get('participants', {}):
-                    updated_participants = {sid: name for sid, name in jam_data['participants'].items() if sid != request.sid}
+                    updated_participants = {sid: participant_data for sid, participant_data in jam_data['participants'].items() if sid != request.sid}
                     jam_data['participants'] = updated_participants # Update local state
                     logging.info(f"Participant {nickname} ({request.sid}) left jam {jam_id}.")
                     socketio.emit('update_participants', {
@@ -443,8 +406,6 @@ def handle_disconnect():
                     # If this was the last participant and host is already gone, delete session
                     if not updated_participants and jam_id not in jam_sessions: # Check if host already deleted
                         logging.info(f"Last participant left jam {jam_id} which had no host. Deleting session.")
-                        # Session might already be gone if host left.
-                        # No need to emit session_ended again if host already did.
                         pass # The host's disconnect already handled the deletion.
                 
             # Clean up local socketio tracking for the disconnecting SID
@@ -466,15 +427,16 @@ def create_session(data):
     initial_jam_data = {
         'name': jam_name,
         'host_sid': request.sid,
-        'participants': {request.sid: nickname}, # Store SID to nickname mapping
+        # Host gets all permissions by default
+        'participants': {request.sid: {'nickname': nickname, 'permissions': {'play': True, 'add': True, 'remove': True}}}, 
         'playlist': [],
         'playback_state': {
             'current_track_index': 0,
             'current_playback_time': 0,
             'is_playing': False,
-            'timestamp': 0 # Local timestamp for internal logic
+            'timestamp': datetime.datetime.now().timestamp() # Use server timestamp for internal logic
         },
-        'created_at': 0, # Placeholder
+        'created_at': datetime.datetime.now().timestamp(),
         'is_active': True # Mark session as active
     }
     
@@ -491,7 +453,7 @@ def create_session(data):
         'jam_name': jam_name,
         'is_host': True,
         'initial_state': initial_jam_data['playback_state'],
-        'participants': initial_jam_data['participants'],
+        'participants': initial_jam_data['participants'], # Send full participant data with permissions
         'shareable_link': shareable_link,
         'nickname_used': nickname
     })
@@ -513,9 +475,12 @@ def join_session_handler(data):
 
     jam_data = jam_sessions[jam_id]
     
-    # Add participant to local dictionary
+    # Add participant to local dictionary with default guest permissions
     updated_participants = jam_data.get('participants', {})
-    updated_participants[request.sid] = nickname
+    updated_participants[request.sid] = {
+        'nickname': nickname,
+        'permissions': {'play': False, 'add': False, 'remove': False} # Guests get no permissions by default
+    }
     jam_data['participants'] = updated_participants
 
     sids_in_jams[request.sid] = {'jam_id': jam_id, 'nickname': nickname}
@@ -533,7 +498,7 @@ def join_session_handler(data):
         'jam_name': jam_data.get('name', 'Unnamed Jam'),
         'last_synced_at': playback_state.get('timestamp', 0),
         'host_sid': jam_data.get('host_sid'), # Send host_sid for client-side role check
-        'participants': updated_participants,
+        'participants': updated_participants, # Send full participant data with permissions
         'nickname_used': nickname
     })
 
@@ -551,9 +516,17 @@ def sync_playback_state(data):
         return
 
     jam_data = jam_sessions[jam_id]
-    if jam_data.get('host_sid') != request.sid: # Only host can sync state
+    
+    # Only host can sync state
+    if jam_data.get('host_sid') != request.sid: 
         logging.warning(f"Non-host {request.sid} attempted to sync state for jam {jam_id}")
         return
+    
+    # Host's permission to play is implicitly True, but we can add an explicit check for robustness
+    if not jam_data['participants'][request.sid]['permissions']['play']:
+        logging.warning(f"Host {request.sid} does not have 'play' permission in jam {jam_id}.")
+        return
+
 
     new_playback_state = {
         'current_track_index': data.get('current_track_index'),
@@ -585,8 +558,11 @@ def add_song_to_jam(data):
         return
     
     jam_data = jam_sessions[jam_id]
-    if jam_data.get('host_sid') != request.sid:
-        logging.warning(f"Non-host {request.sid} attempted to add song to jam {jam_id}")
+    
+    # Permission check: Only allow if 'add' permission is granted
+    if not jam_data['participants'].get(request.sid, {}).get('permissions', {}).get('add', False):
+        logging.warning(f"Client {request.sid} (nickname: {jam_data['participants'].get(request.sid, {}).get('nickname', 'Unknown')}) attempted to add song to jam {jam_id} without 'add' permission.")
+        emit('permission_denied', {'action': 'add_song', 'message': 'You do not have permission to add songs to this jam.'}, room=request.sid)
         return
 
     # Assign a unique ID to the song if it doesn't have one
@@ -597,7 +573,7 @@ def add_song_to_jam(data):
     updated_playlist.append(song)
     jam_data['playlist'] = updated_playlist # Update local state
 
-    logging.info(f"Song '{song.get('title', 'Unknown')}' (Type: {song.get('type')}) added to jam {jam_id} by host {request.sid}.")
+    logging.info(f"Song '{song.get('title', 'Unknown')}' (Type: {song.get('type')}) added to jam {jam_id} by {jam_data['participants'][request.sid]['nickname']} ({request.sid}).")
 
     # Broadcast updated playlist to all participants
     emit('playlist_updated', {'jam_id': jam_id, 'playlist': updated_playlist}, room=jam_id)
@@ -612,8 +588,11 @@ def remove_song_from_jam(data):
         return
 
     jam_data = jam_sessions[jam_id]
-    if jam_data.get('host_sid') != request.sid:
-        logging.warning(f"Non-host {request.sid} attempted to remove song from jam {jam_id}")
+
+    # Permission check: Only allow if 'remove' permission is granted
+    if not jam_data['participants'].get(request.sid, {}).get('permissions', {}).get('remove', False):
+        logging.warning(f"Client {request.sid} (nickname: {jam_data['participants'].get(request.sid, {}).get('nickname', 'Unknown')}) attempted to remove song from jam {jam_id} without 'remove' permission.")
+        emit('permission_denied', {'action': 'remove_song', 'message': 'You do not have permission to remove songs from this jam.'}, room=request.sid)
         return
 
     current_playlist = jam_data.get('playlist', [])
@@ -625,7 +604,7 @@ def remove_song_from_jam(data):
 
     if index_to_remove != -1:
         removed_song = current_playlist.pop(index_to_remove)
-        logging.info(f"Song '{removed_song.get('title', 'Unknown')}' removed from jam {jam_id} by host {request.sid}.")
+        logging.info(f"Song '{removed_song.get('title', 'Unknown')}' removed from jam {jam_id} by {jam_data['participants'][request.sid]['nickname']} ({request.sid}).")
         
         # Adjust current_track_index if the removed song affects it
         current_track_index = jam_data['playback_state'].get('current_track_index', 0)
@@ -647,12 +626,47 @@ def remove_song_from_jam(data):
         emit('playlist_updated', {'jam_id': jam_id, 'playlist': current_playlist}, room=jam_id)
         emit('playback_state_updated', {'jam_id': jam_id, 'playback_state': jam_data['playback_state'], 'playlist': current_playlist}, room=jam_id) # Send full state for re-sync
 
+@socketio.on('update_participant_permissions')
+def update_participant_permissions(data):
+    jam_id = data.get('jam_id')
+    target_sid = data.get('target_sid')
+    new_permissions = data.get('permissions') # e.g., {'play': True, 'add': False, 'remove': True}
+
+    if not jam_id or jam_id not in jam_sessions or not target_sid or not isinstance(new_permissions, dict):
+        logging.warning(f"Invalid update_participant_permissions request from {request.sid}")
+        return
+
+    jam_data = jam_sessions[jam_id]
+
+    # Only the host can update permissions
+    if jam_data.get('host_sid') != request.sid:
+        logging.warning(f"Non-host {request.sid} attempted to change permissions in jam {jam_id}")
+        emit('permission_denied', {'action': 'change_permissions', 'message': 'Only the host can change participant permissions.'}, room=request.sid)
+        return
+
+    # Ensure target_sid exists in participants
+    if target_sid not in jam_data['participants']:
+        logging.warning(f"Host {request.sid} attempted to change permissions for non-existent SID {target_sid} in jam {jam_id}")
+        emit('permission_denied', {'action': 'change_permissions', 'message': 'Target participant not found in this jam.'}, room=request.sid)
+        return
+
+    # Update permissions for the target participant
+    participant_data = jam_data['participants'][target_sid]
+    participant_data['permissions'].update(new_permissions) # Update specific permissions
+
+    logging.info(f"Host {request.sid} updated permissions for {participant_data['nickname']} ({target_sid}) in jam {jam_id}: {new_permissions}")
+
+    # Broadcast the updated participants list to all clients in the room
+    emit('update_participants', {
+        'jam_id': jam_id,
+        'participants': jam_data['participants']
+    }, room=jam_id)
+
+
 # When running on Vercel, the application is served by a WSGI server (e.g., Gunicorn),
 # which handles starting the Flask app. The 'socketio.run(app, ...)' call is only for
 # local development with Flask's built-in server.
 if __name__ == '__main__':
-    # No more Firebase checks here
-    # This line is for local development only. Vercel will run `app` directly.
     socketio.run(app, debug=True, port=5000)
 
 # Global error handler to ensure all errors return JSON responses

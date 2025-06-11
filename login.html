@@ -14,15 +14,14 @@
 
     // Firebase configuration - UPDATED TO TUNEJAM PROJECT
     const firebaseConfig = {
-  apiKey: "AIzaSyATBx_uJIoeRqGSBFtc2nTnf2QpGQbOG_I",
-  authDomain: "tunejam-82a06.firebaseapp.com",
-  projectId: "tunejam-82a06",
-  storageBucket: "tunejam-82a06.firebasestorage.app",
-  messagingSenderId: "570252865241",
-  appId: "1:570252865241:web:d4f5fe11cf93c5c41bd8c8",
-  measurementId: "G-0SHRCG91FW"
-};
-
+      apiKey: "AIzaSyATBx_uJIoeRqGSBFtc2nTnf2QpGQbOG_I",
+      authDomain: "tunejam-82a06.firebaseapp.com",
+      projectId: "tunejam-82a06",
+      storageBucket: "tunejam-82a06.firebasestorage.app",
+      messagingSenderId: "570252865241",
+      appId: "1:570252865241:web:d4f5fe11cf93c5c41bd8c8",
+      measurementId: "G-0SHRCG91FW"
+    };
 
     // Initialize Firebase
     const app = initializeApp(firebaseConfig);
@@ -53,15 +52,20 @@
     /**
      * Handles the user login process.
      * Authenticates with Firebase and then sends the ID token to the backend.
+     * Includes a loading spinner for visual feedback during the process.
      */
     async function login() {
       const email = document.getElementById('email').value;
       const password = document.getElementById('password').value;
+      const loadingSpinner = document.getElementById('loading-spinner');
 
       if (!email || !password) {
         showModal("Please enter both email and password.");
         return;
       }
+
+      // Show the loading spinner
+      loadingSpinner.classList.remove('hidden');
 
       try {
         // Sign in user with Firebase Authentication
@@ -96,12 +100,23 @@
           errorMessage = err.message;
         }
         showModal("Error: " + errorMessage);
+      } finally {
+        // Hide the loading spinner regardless of success or failure
+        loadingSpinner.classList.add('hidden');
       }
     }
   </script>
   <style>
     body {
       font-family: 'Inter', sans-serif;
+    }
+    /* Simple spinner animation */
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .animate-spin {
+      animation: spin 1s linear infinite;
     }
   </style>
 </head>
@@ -145,6 +160,13 @@
       >
         Login
       </button>
+
+      <!-- Loading Spinner -->
+      <div id="loading-spinner" class="hidden text-center mt-4">
+        <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-t-blue-600 border-gray-200"></div>
+        <p class="text-gray-600 mt-2">Authenticating...</p>
+      </div>
+
     </form>
 
     <p class="text-center text-gray-600 mt-6">

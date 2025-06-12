@@ -3,7 +3,10 @@
   "builds": [
     {
       "src": "api/app.py",
-      "use": "@vercel/python@3.0.0"
+      "use": "@vercel/python@3.0.0",
+      "config": {
+        "maxDuration": 300
+      }
     }
   ],
   "routes": [
@@ -19,11 +22,6 @@
       "dest": "api/app.py"
     }
   ],
-  "functions": {
-    "api/app.py": {
-      "maxDuration": 300
-    }
-  },
   "env": {
     "FLASK_SECRET_KEY": "FLASK_SECRET_KEY",
     "FIREBASE_ADMIN_CREDENTIALS_JSON": "FIREBASE_ADMIN_CREDENTIALS_JSON"

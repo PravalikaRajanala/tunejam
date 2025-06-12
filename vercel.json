@@ -22,7 +22,6 @@
   "functions": {
     "api/app.py": {
       "maxDuration": 300
-      // Runtime is now specified in the 'builds' section, not here
     }
   },
   "env": {

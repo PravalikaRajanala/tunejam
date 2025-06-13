@@ -23,7 +23,7 @@
     }
   ],
   "env": {
-    "FLASK_SECRET_KEY": "@flask_secret_key",
+    "FLASK_SECRET_KEY": "@FLASK_SECRET_KEY",
     "FIREBASE_ADMIN_CREDENTIALS_JSON": "@firebase_admin_credentials_json"
   }
 }

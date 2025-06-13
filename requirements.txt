@@ -8,7 +8,7 @@ cffi==1.17.1
 charset-normalizer==3.4.2
 click==8.2.1
 colorama==0.4.6
-cryptography==45.0.3
+cryptography==42.0.8
 dnspython==2.7.0
 eventlet==0.40.0
 firebase-admin==6.8.0

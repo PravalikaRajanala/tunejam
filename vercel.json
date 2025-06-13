@@ -1,12 +1,11 @@
 {
   "version": 2,
   "builds": [
-    {
-      "src": "app.py",
+     {
+      "src": "api/app.py",
       "use": "@vercel/python@2.0.0",
       "config": {
-        "maxDuration": 300,
-        "pythonVersion": "3.10"
+        "runtime": "python3.9"  
       }
     }
   ],

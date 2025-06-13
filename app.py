@@ -113,50 +113,50 @@ except Exception as e:
 
 # --- Helper for getting base URL ---
 def get_base_url():
-    # In a Vercel environment, request.base_url or request.host_url
-    # should correctly reflect the public URL.
-    # For local development, it will be http://127.0.0.1:5000/
-    # Ensure this works correctly in your Vercel setup
-    # If not, you might need to get the Vercel URL from an environment variable
     return request.url_root # This typically returns http://example.com/
 
-# --- Authentication Decorator ---
+# --- Authentication Decorator (UPDATED) ---
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         session_cookie = request.cookies.get('session')
         if not session_cookie:
-            logging.info("Login required: No session cookie found. Redirecting to login.")
-            return redirect(url_for('login_page'))
+            logging.info("Login required: No session cookie found. Returning 401 Unauthorized JSON.")
+            # *** CHANGE 1: Return 401 JSON instead of redirecting to a missing page ***
+            return jsonify({"error": "Unauthorized", "message": "Login required."}), 401
         try:
             if not firebase_auth:
                 logging.error("Firebase Admin SDK Auth not initialized. Cannot verify session cookie for login_required.")
-                response = make_response(redirect(url_for('login_page')))
-                response.set_cookie('session', '', expires=0)
-                return response
+                # *** CHANGE 2: Return 500 JSON with cookie clear if auth isn't ready ***
+                response = make_response(jsonify({"error": "Server error", "message": "Authentication service not available."}))
+                response.set_cookie('session', '', expires=0) # Clear cookie
+                return response, 500
 
             decoded_claims = firebase_auth.verify_session_cookie(session_cookie, check_revoked=True)
             request.user = decoded_claims
             logging.info(f"User {request.user['uid']} authenticated via session cookie for route access.")
         except auth.InvalidSessionCookieError:
-            logging.warning("Invalid or revoked session cookie. Redirecting to login.")
-            response = make_response(redirect(url_for('login_page')))
-            response.set_cookie('session', '', expires=0)
-            return response
+            logging.warning("Invalid or revoked session cookie. Returning 401 Unauthorized JSON and clearing cookie.")
+            # *** CHANGE 3: Return 401 JSON with cookie clear for invalid/expired sessions ***
+            response = make_response(jsonify({"error": "Unauthorized", "message": "Session expired or invalid. Please log in again."}))
+            response.set_cookie('session', '', expires=0) # Clear cookie
+            return response, 401
         except Exception as e:
-            logging.error(f"Error verifying session cookie in login_required decorator: {e}")
-            return redirect(url_for('login_page'))
+            logging.error(f"Error verifying session cookie in login_required decorator: {e}", exc_info=True)
+            # *** CHANGE 4: Return 500 JSON with cookie clear for other authentication errors ***
+            response = make_response(jsonify({"error": "Server error", "message": "An error occurred during authentication."}))
+            response.set_cookie('session', '', expires=0) # Clear cookie
+            return response, 500
         return f(*args, **kwargs)
     return decorated_function
 
-# --- Flask Routes ---
-@app.route('/login', methods=['GET'])
-def login_page():
-    return render_template('login.html')
+# --- Flask Routes (UPDATED - Removed login/register HTML routes) ---
 
-@app.route('/register', methods=['GET'])
-def register_page():
-    return render_template('register.html')
+# *** REMOVED: @app.route('/login', methods=['GET']) and login_page() ***
+# These HTML files no longer exist, so the routes are removed to prevent TemplateNotFound errors.
+
+# *** REMOVED: @app.route('/register', methods=['GET']) and register_page() ***
+# These HTML files no longer exist, so the routes are removed to prevent TemplateNotFound errors.
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -180,11 +180,11 @@ def login():
         logging.warning("Invalid ID token during login.")
         return jsonify({"error": "Invalid ID token."}), 401
     except Exception as e:
-        logging.error(f"Error during login process: {e}")
+        logging.error(f"Error during login process: {e}", exc_info=True)
         return jsonify({"error": "Authentication failed."}), 500
 
 @app.route('/logout', methods=['POST'])
-@login_required
+@login_required # This will now return 401 if the session is somehow invalid, but proceeds if valid.
 def logout():
     session_cookie = request.cookies.get('session')
     if session_cookie and firebase_auth:
@@ -192,15 +192,17 @@ def logout():
             firebase_auth.revoke_session_cookies(session_cookie)
             logging.info("Session cookie revoked.")
         except Exception as e:
-            logging.error(f"Error revoking session cookie: {e}")
+            logging.error(f"Error revoking session cookie: {e}", exc_info=True)
     response = make_response(jsonify({"message": "Logout successful!"}))
     response.set_cookie('session', '', expires=0)
     logging.info("Client-side session cookie cleared.")
     return response
 
 @app.route('/')
-@login_required
+@login_required # If not logged in, this will now return 401, not redirect.
 def index():
+    # If the login_required decorator passes, it means the user is authenticated.
+    # The frontend JavaScript loaded by index.html should then display the appropriate content.
     return render_template('index.html')
 
 @app.route('/hosted_songs_manifest.json')
@@ -239,7 +241,14 @@ def get_jam_session_ref(jam_id):
         return None
     return db.collection('jam_sessions').document(jam_id)
 
-async def generate_unique_6_digit_jam_id():
+# *** IMPORTANT: Your original `generate_unique_6_digit_jam_id` was not `async`.
+# If you make it `async`, you need `eventlet.sleep()` if it's CPU-bound or `eventlet.spawn_after`
+# for non-blocking I/O with Firestore.
+# For simplicity and correctness with sync Firestore calls (which are often wrapped by eventlet),
+# let's keep it sync if Firestore calls are automatically patched, or ensure you're doing proper awaits.
+# Assuming db.collection(...).get() is implicitly non-blocking due to monkey_patch.
+
+def generate_unique_6_digit_jam_id(): # No 'async' keyword here
     """Generates a unique 6-digit numeric jam ID."""
     if not db:
         logging.error("Firestore DB not initialized. Cannot generate unique jam ID.")
@@ -247,7 +256,7 @@ async def generate_unique_6_digit_jam_id():
     
     for _ in range(10): # Try up to 10 times to find a unique ID
         jam_id = str(random.randint(100000, 999999))
-        jam_doc = await db.collection('jam_sessions').document(jam_id).get()
+        jam_doc = db.collection('jam_sessions').document(jam_id).get() # No 'await'
         if not jam_doc.exists:
             return jam_id
     logging.error("Failed to generate a unique 6-digit jam ID after multiple attempts.")
@@ -275,6 +284,36 @@ def set_user_jam_session_status(user_id, jam_id=None):
         users_ref.update({'current_jam_session_id': firestore.DELETE_FIELD})
         logging.info(f"User {user_id} left jam session in Firestore (field deleted).")
 
+# Firestore Snapshot Listener (if you removed it, add it back, but ensure on_jam_session_snapshot is defined)
+# This callback needs to be defined for the listener to work
+def on_jam_session_snapshot(col_snapshot, changes, read_time):
+    # This function is called every time there's a change in the 'jam_sessions' collection
+    # You'll likely want to iterate through 'changes' to see what changed and emit updates
+    # to relevant Socket.IO rooms.
+    for change in changes:
+        if change.type.name == 'ADDED' or change.type.name == 'MODIFIED':
+            jam_id = change.document.id
+            state = change.document.to_dict()
+            logging.info(f"Firestore change for jam {jam_id}: {state}")
+            socketio.emit('jam_session_state', state, room=jam_id) # Emit to all in that jam's room
+        elif change.type.name == 'REMOVED':
+            jam_id = change.document.id
+            logging.info(f"Firestore removed jam {jam_id}. Emitting session_ended.")
+            socketio.emit('session_ended', {'jam_id': jam_id, 'message': 'Jam session ended by host.'}, room=jam_id)
+
+
+if db:
+    try:
+        # Attach the listener to the entire 'jam_sessions' collection
+        # This will trigger `on_jam_session_snapshot` on any change
+        db.collection('jam_sessions').on_snapshot(on_jam_session_snapshot)
+        logging.info("Attached Firestore snapshot listener for 'jam_sessions' collection.")
+    except Exception as e:
+        logging.error(f"Error attaching Firestore snapshot listener: {e}")
+else:
+    logging.warning("Firestore DB not available, cannot attach snapshot listener for jam sessions.")
+
+
 # --- Socket.IO Events ---
 
 @socketio.on('connect')
@@ -290,36 +329,14 @@ def handle_disconnect():
     logging.info(f"Client disconnected: {request.sid}, User ID: {user_id}")
     # Removed automatic leave logic here; client should explicitly leave or host handles session end
 
-def emit_jam_session_state(jam_id):
-    if not db:
-        logging.error("Firestore DB not initialized for emit_jam_session_state.")
-        return
-    jam_ref = get_jam_session_ref(jam_id)
-    jam_doc = jam_ref.get()
-    if jam_doc.exists:
-        state = jam_doc.to_dict()
-        logging.info(f"Emitting jam session state for {jam_id}: {state}")
-        socketio.emit('jam_session_state', state, room=jam_id)
-    else:
-        logging.warning(f"Attempted to emit state for non-existent jam session: {jam_id}")
-
-# This function should be called whenever the Firestore document for a jam session changes.
-# This listener setup ensures real-time updates are pushed to all connected clients.
-if db:
-    try:
-        # Use a collection group query for all jam sessions if you want a single listener
-        # Or listen to individual jam sessions when a user joins one
-        # For simplicity, we are listening to all changes on 'jam_sessions'
-        db.collection('jam_sessions').on_snapshot(on_jam_session_snapshot)
-        logging.info("Attached Firestore snapshot listener for 'jam_sessions' collection.")
-    except Exception as e:
-        logging.error(f"Error attaching Firestore snapshot listener: {e}")
-else:
-    logging.warning("Firestore DB not available, cannot attach snapshot listener for jam sessions.")
-
+# Removed emit_jam_session_state as it's now handled by the Firestore listener automatically
 
 @socketio.on('create_session')
-async def handle_create_session(data):
+# *** IMPORTANT: Reverted to sync Firestore calls for now, as `async def` and `await` with
+# Flask-SocketIO and Eventlet can be tricky without careful management of coroutines.
+# If you intend to use `async/await` throughout, ensure you're fully understanding Eventlet's
+# interaction with native async. For now, using sync calls that Eventlet will patch.
+def handle_create_session(data): # Removed 'async'
     if not db or not firebase_auth:
         emit('join_failed', {'message': 'Server database or authentication not available.'}, room=request.sid)
         return
@@ -333,7 +350,7 @@ async def handle_create_session(data):
         return
 
     # Generate a unique 6-digit jam ID
-    jam_id = await generate_unique_6_digit_jam_id()
+    jam_id = generate_unique_6_digit_jam_id() # Removed 'await'
     if not jam_id:
         emit('join_failed', {'message': 'Could not generate a unique jam ID. Please try again.'}, room=request.sid)
         return
@@ -360,7 +377,7 @@ async def handle_create_session(data):
         'created_at': firestore.SERVER_TIMESTAMP
     }
     try:
-        await jam_ref.set(initial_state) # Use await for async Firestore operation
+        jam_ref.set(initial_state) # Removed 'await'
         set_user_jam_session_status(user_id, jam_id) # Set user's current jam
 
         join_room(jam_id) # Join the Socket.IO room
@@ -375,11 +392,11 @@ async def handle_create_session(data):
         }, room=request.sid)
         logging.info(f"User {user_id} (SID: {request.sid}) created jam session: {jam_id} - '{jam_name}'")
     except Exception as e:
-        logging.error(f"Error creating jam session for user {user_id}: {e}")
+        logging.error(f"Error creating jam session for user {user_id}: {e}", exc_info=True)
         emit('join_failed', {'message': f'Failed to create jam session: {e}'}, room=request.sid)
 
 @socketio.on('join_session')
-async def handle_join_session(data):
+def handle_join_session(data): # Removed 'async'
     if not db or not firebase_auth:
         emit('join_failed', {'message': 'Server database or authentication not available.'}, room=request.sid)
         return
@@ -393,14 +410,14 @@ async def handle_join_session(data):
         return
 
     jam_ref = get_jam_session_ref(jam_id)
-    jam_doc = await jam_ref.get() # Use await
+    jam_doc = jam_ref.get() # Removed 'await'
 
     if jam_doc.exists and jam_doc.to_dict().get('is_active'):
         try:
             current_participants = jam_doc.to_dict().get('participants', {})
             # Add new participant (Socket.IO SID to nickname mapping)
             current_participants[request.sid] = nickname 
-            await jam_ref.update({'participants': current_participants}) # Use await
+            jam_ref.update({'participants': current_participants}) # Removed 'await'
             set_user_jam_session_status(user_id, jam_id) # Set user's current jam
 
             join_room(jam_id) # Join the Socket.IO room
@@ -428,14 +445,14 @@ async def handle_join_session(data):
 
             logging.info(f"User {user_id} (SID: {request.sid}) joined jam session: {jam_id}")
         except Exception as e:
-            logging.error(f"Error joining jam session {jam_id} for user {user_id}: {e}")
+            logging.error(f"Error joining jam session {jam_id} for user {user_id}: {e}", exc_info=True)
             emit('join_failed', {'message': f'Failed to join jam session: {e}'}, room=request.sid)
     else:
         emit('join_failed', {'message': 'Jam session not found or is inactive.'}, room=request.sid)
         logging.warning(f"User {user_id} attempted to join non-existent jam session: {jam_id}")
 
 @socketio.on('leave_session')
-async def handle_leave_session(data):
+def handle_leave_session(data): # Removed 'async'
     if not db:
         emit('jam_error', {'message': 'Server database not available.'}, room=request.sid)
         return
@@ -448,7 +465,7 @@ async def handle_leave_session(data):
         return
 
     jam_ref = get_jam_session_ref(jam_id)
-    jam_doc = await jam_ref.get() # Use await
+    jam_doc = jam_ref.get() # Removed 'await'
 
     if jam_doc.exists:
         try:
@@ -459,11 +476,11 @@ async def handle_leave_session(data):
                 del current_participants[request.sid] # Remove by SID
 
                 if jam_data.get('host_sid') == request.sid: # If host is leaving
-                    await jam_ref.update({'is_active': False, 'ended_at': firestore.SERVER_TIMESTAMP})
+                    jam_ref.update({'is_active': False, 'ended_at': firestore.SERVER_TIMESTAMP}) # Removed 'await'
                     logging.info(f"Host (SID: {request.sid}) ended jam session {jam_id}.")
                     # No need to update participants if session is ending, as 'session_ended' will be sent
                 else: # Participant leaving
-                    await jam_ref.update({'participants': current_participants})
+                    jam_ref.update({'participants': current_participants}) # Removed 'await'
                     logging.info(f"User (SID: {request.sid}) left jam session {jam_id}.")
                     # Inform others about updated participant list
                     socketio.emit('update_participants', {
@@ -476,14 +493,14 @@ async def handle_leave_session(data):
             emit('session_ended', {'jam_id': jam_id, 'message': 'You have left the jam session.'}, room=request.sid) # Confirm leave to self
 
         except Exception as e:
-            logging.error(f"Error leaving jam session {jam_id} for user {user_id}: {e}")
+            logging.error(f"Error leaving jam session {jam_id} for user {user_id}: {e}", exc_info=True)
             emit('jam_error', {'message': f'Failed to leave jam session: {e}'}, room=request.sid)
     else:
         emit('jam_error', {'message': 'Jam session not found.'}, room=request.sid)
         logging.warning(f"User {user_id} attempted to leave non-existent jam session: {jam_id}")
 
 @socketio.on('sync_playback_state')
-async def handle_sync_playback_state(data):
+def handle_sync_playback_state(data): # Removed 'async'
     if not db:
         emit('jam_error', {'message': 'Server database not available.'}, room=request.sid)
         return
@@ -495,7 +512,7 @@ async def handle_sync_playback_state(data):
     playlist = data.get('playlist') # Host sends its current playlist
 
     jam_ref = get_jam_session_ref(jam_id)
-    jam_doc = await jam_ref.get() # Use await
+    jam_doc = jam_ref.get() # Removed 'await'
 
     if jam_doc.exists:
         jam_data = jam_doc.to_dict()
@@ -511,20 +528,20 @@ async def handle_sync_playback_state(data):
         }
         try:
             # Update both playlist and playback state in one go
-            await jam_ref.update({
+            jam_ref.update({ # Removed 'await'
                 'playlist': playlist,
                 'playback_state': playback_state
-            }) # Use await
+            })
             logging.info(f"Jam session {jam_id} state updated by host (SID: {request.sid}).")
             # Firestore listener will propagate this change to all clients in the room.
         except Exception as e:
-            logging.error(f"Error updating jam session {jam_id} state from host: {e}")
+            logging.error(f"Error updating jam session {jam_id} state from host: {e}", exc_info=True)
             emit('jam_error', {'message': f'Failed to sync state: {e}'}, room=request.sid)
     else:
         emit('jam_error', {'message': 'Jam session not found.'}, room=request.sid)
 
 @socketio.on('add_song_to_jam')
-async def handle_add_song_to_jam(data):
+def handle_add_song_to_jam(data): # Removed 'async'
     if not db:
         emit('jam_error', {'message': 'Server database not available.'}, room=request.sid)
         return
@@ -537,7 +554,7 @@ async def handle_add_song_to_jam(data):
         return
 
     jam_ref = get_jam_session_ref(jam_id)
-    jam_doc = await jam_ref.get()
+    jam_doc = jam_ref.get() # Removed 'await'
 
     if jam_doc.exists:
         jam_data = jam_doc.to_dict()
@@ -548,20 +565,20 @@ async def handle_add_song_to_jam(data):
         current_playlist = jam_data.get('playlist', [])
         current_playlist.append(song)
         try:
-            await jam_ref.update({
+            jam_ref.update({ # Removed 'await'
                 'playlist': current_playlist,
                 'playback_state.timestamp': firestore.SERVER_TIMESTAMP # Update timestamp to trigger sync
             })
             logging.info(f"Song '{song.get('title', 'unknown')}' added to jam {jam_id} by host.")
             # The Firestore listener will propagate this to all clients
         except Exception as e:
-            logging.error(f"Error adding song to jam {jam_id} playlist: {e}")
+            logging.error(f"Error adding song to jam {jam_id} playlist: {e}", exc_info=True)
             emit('jam_error', {'message': f'Failed to add song: {e}'}, room=request.sid)
     else:
         emit('jam_error', {'message': 'Jam session not found.'}, room=request.sid)
 
 @socketio.on('remove_song_from_jam')
-async def handle_remove_song_from_jam(data):
+def handle_remove_song_from_jam(data): # Removed 'async'
     if not db:
         emit('jam_error', {'message': 'Server database not available.'}, room=request.sid)
         return
@@ -574,7 +591,7 @@ async def handle_remove_song_from_jam(data):
         return
 
     jam_ref = get_jam_session_ref(jam_id)
-    jam_doc = await jam_ref.get()
+    jam_doc = jam_ref.get() # Removed 'await'
 
     if jam_doc.exists:
         jam_data = jam_doc.to_dict()
@@ -587,14 +604,14 @@ async def handle_remove_song_from_jam(data):
 
         if len(current_playlist) != len(updated_playlist): # If a song was actually removed
             try:
-                await jam_ref.update({
+                jam_ref.update({ # Removed 'await'
                     'playlist': updated_playlist,
                     'playback_state.timestamp': firestore.SERVER_TIMESTAMP # Update timestamp
                 })
                 logging.info(f"Song '{song_id_to_remove}' removed from jam {jam_id} by host.")
                 # Firestore listener will propagate this to all clients
             except Exception as e:
-                logging.error(f"Error removing song '{song_id_to_remove}' from jam {jam_id}: {e}")
+                logging.error(f"Error removing song '{song_id_to_remove}' from jam {jam_id}: {e}", exc_info=True)
                 emit('jam_error', {'message': f'Failed to remove song: {e}'}, room=request.sid)
         else:
             emit('jam_error', {'message': 'Song not found in playlist.'}, room=request.sid)
@@ -611,7 +628,7 @@ if firebase_auth is None:
 # Global error handler to ensure all errors return JSON responses
 @app.errorhandler(HTTPException)
 def handle_http_exception(e):
-    logging.error(f"Global HTTP error handler caught: {e}")
+    logging.error(f"Global HTTP error handler caught: {e}", exc_info=True)
     code = e.code if isinstance(e, HTTPException) else 500
     message = e.description if isinstance(e, HTTPException) and e.description else "An unexpected server error occurred."
     if code == 500:
@@ -626,4 +643,3 @@ def handle_generic_exception(e):
     response = jsonify(error={"code": 500, "message": "An internal server error occurred. Please try again later."})
     response.status_code = 500
     return response
-

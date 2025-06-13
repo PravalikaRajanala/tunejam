@@ -1,14 +1,19 @@
 {
   "version": 2,
   "builds": [
-     {
-      "src": "api/app.py",
+    {
+      "src": "app.py",
       "use": "@vercel/python@2.0.0",
       "config": {
-        "runtime": "python3.9"  
+        "runtime": "python3.10"
       }
     }
   ],
+  "functions": {
+    "app.py": {
+      "runtime": "python3.10"
+    }
+  },
   "routes": [
     {
       "src": "/socket.io/",
@@ -23,7 +28,7 @@
     }
   ],
   "env": {
-    "FLASK_SECRET_KEY": "FLASK_SECRET_KEY",
-    "FIREBASE_ADMIN_CREDENTIALS_JSON": "FIREBASE_ADMIN_CREDENTIALS_JSON"
+    "FLASK_SECRET_KEY": "@flask_secret_key",
+    "FIREBASE_ADMIN_CREDENTIALS_JSON": "@firebase_admin_credentials_json"
   }
 }

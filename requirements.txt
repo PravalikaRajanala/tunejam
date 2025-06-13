@@ -36,7 +36,7 @@ idna==3.7
 itsdangerous==2.2.0
 Jinja2==3.1.4
 MarkupSafe==2.1.5
-oauthlib==1.1.0
+oauthlib>=3.0.0  # Changed from oauthlib==1.1.0
 protobuf==4.25.3
 pyasn1==0.6.0
 pyasn1-modules==0.4.0

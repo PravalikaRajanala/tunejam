@@ -2,7 +2,7 @@
   "version": 2,
   "builds": [
      {
-      "src": "api/app.py",
+      "src": "app.py",
       "use": "@vercel/python@2.0.0",
       "config": {
         "runtime": "python3.9"  
